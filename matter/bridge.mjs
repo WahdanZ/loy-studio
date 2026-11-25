@@ -57,18 +57,18 @@ async function main() {
       discriminator: DISCRIMINATOR,
     },
     productDescription: {
-      name: "LOY Studio Bridge",
+      name: "Desk Display Bridge",
       deviceType: AggregatorEndpoint.deviceType,
     },
     basicInformation: {
-      vendorName: "LOY Studio",
+      vendorName: "Desk Display",
       vendorId: 0xfff1,
-      nodeLabel: "LOY Studio Bridge",
-      productName: "LOY 64x64 LED Bridge",
-      productLabel: "LOY 64x64 LED Bridge",
+      nodeLabel: "Desk Display Bridge",
+      productName: "Desk Display 64x64",
+      productLabel: "Desk Display 64x64",
       productId: 0x8001,
-      serialNumber: "LOY-MATTER-64X64",
-      uniqueId: "loy-studio-matter-bridge-01",
+      serialNumber: "DESK-DISPLAY-64X64",
+      uniqueId: "desk-display-matter-bridge-01",
     },
   });
 
@@ -80,9 +80,9 @@ async function main() {
   const displayEp = new Endpoint(BridgedLight, {
     id: "loy-desk-display",
     bridgedDeviceBasicInformation: {
-      nodeLabel: "LOY Desk Display",
-      productName: "64x64 LED Pixel Matrix",
-      vendorName: "LOY Studio",
+      nodeLabel: "Desk Display",
+      productName: "64x64 LED Matrix",
+      vendorName: "Desk Display",
       reachable: true,
     },
     onOff: { onOff: true },
@@ -112,22 +112,22 @@ async function main() {
   const modeDefs = [
     {
       id: "loy-mode-onair",
-      label: "LOY ON AIR",
+      label: "On Air Mode",
       trigger: () => loyPost("/api/gif_pack/send", { filename: "11_mode_on_air_meeting.gif" }),
     },
     {
       id: "loy-mode-coding",
-      label: "LOY Coding Mode",
+      label: "Coding Mode",
       trigger: () => loyPost("/api/gif_pack/send", { filename: "10_mode_coding.gif" }),
     },
     {
       id: "loy-mode-synthwave",
-      label: "LOY Synthwave Clock",
+      label: "Synthwave Clock",
       trigger: () => loyPost("/api/hw_text_clock", { shape: "hw_synthwave_sun", color: "#38bdf8", accent: "#ec4899" }),
     },
     {
       id: "loy-mode-weather",
-      label: "LOY Weather Clock",
+      label: "Weather Clock",
       trigger: () => loyPost("/api/weather_clock", { city: WEATHER_CITY }),
     },
   ];
@@ -138,8 +138,8 @@ async function main() {
       id: mode.id,
       bridgedDeviceBasicInformation: {
         nodeLabel: mode.label,
-        productName: "LOY Studio Scene",
-        vendorName: "LOY Studio",
+        productName: "Desk Display Scene",
+        vendorName: "Desk Display",
         reachable: true,
       },
       onOff: { onOff: false },
