@@ -55,6 +55,9 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
   - 10 Desk Work Modes (`Deep Focus`, `Coding`, `ON AIR`, `DND`, `Coffee Break`, `Pomodoro Flow`, `Gaming`, `Lo-Fi Vibe`, `BRB`, `Done/Night`) + 8 animated pixel visuals (Cyber Eyes, Matrix Rain, Retro Fire, Starfield, Rainbow Wave, Pac-Man, Equalizer).
 - **Time & Day Auto-Mode Scheduler**:
   - 24-hour visual timeline, per-day (`M–S`) toggle pills, automatic brightness scheduling (e.g., night dimming), 1-click weekly presets, and per-rule live preview.
+- **Google Home & Nest Hub Native Control (Local Matter Bridge)**:
+  - Built-in 100% offline **Matter** bridge (`matter/bridge.mjs`) that pairs directly with Google Home / Google Nest Hub over local Wi-Fi — zero cloud accounts.
+  - Exposes **`Desk Display`** (On/Off + `0–100%` Brightness slider) and voice-controllable scene switches (**`On Air Mode`**, **`Coding Mode`**, **`Synthwave Clock`**, **`Weather Clock`**) for *"Hey Google"* commands and Google Home Routines.
 - **Smart Desk Automation & macOS Menu Bar**:
   - Zero-touch Mac context detection (auto `ON AIR` when Camera/Zoom is active, auto `Coding` in IDEs/Terminals, auto `BRB` when idle, Apple Calendar 5-minute meeting alerts).
   - Webhook alert flash (`POST /api/notify`) that displays a temporary alert and auto-restores the previous mode, plus optional keyless Open-Meteo Pixel Weather + RTC Clock and Hydration reminders.
@@ -70,6 +73,7 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 | **Bluetooth LE Transport** | **Bleak** (macOS CoreBluetooth) with reliable ACK-paced streaming & auto-reconnect |
 | **Graphics & Media Engine** | **Pillow (PIL)** for `64×64` rendering, clock compositing, quantization & GIF encoding; optional **FFmpeg** for video import |
 | **Frontend UI / PWA** | Vanilla **HTML5 / CSS3 / JavaScript** (zero build step), Canvas 2D LED simulator, Service Worker PWA |
+| **Smart Home Bridge** | **Matter** (`@matter/main` + Node.js) for native local Google Home / Nest Hub control |
 | **macOS Integration** | **rumps** Menu Bar app + `launchd` service (`macos/loy_ctl.sh`) |
 | **Testing** | **pytest** automated protocol & framing test suite |
 
@@ -82,6 +86,7 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 ├── app/                # FastAPI server, creative engine, smart desk automation & PWA frontend
 ├── protocol/           # BLE framing, codecs, display commands & transport layer
 ├── gifs/               # 18 built-in 64×64 pixel-art & Work Mode animated GIFs
+├── matter/             # Local Matter bridge for Google Home / Nest Hub voice & tile control
 ├── macos/              # macOS Menu Bar app, launchd plist template & loy_ctl.sh helper
 ├── poc/                # Command-line controller (loy_cli.py)
 ├── tools/              # Pixel-art GIF generators & utility scripts
@@ -105,10 +110,14 @@ pytest -q tests/test_protocol.py
 # 3. Start LOY Studio (localhost only, or add --lan for password-protected Wi-Fi phone access)
 python app/server.py --lan --port 18420
 
-# 4. Optional: launch macOS Menu Bar app or enable auto-start at login
+# 4. Optional: start Google Home / Nest Hub local Matter bridge
+cd matter && npm install && cd ..
+./macos/loy_ctl.sh matter
+
+# 5. Optional: launch macOS Menu Bar app or enable auto-start at login
 ./macos/loy_ctl.sh menubar
 ./macos/loy_ctl.sh install-login
 
-# 5. Optional: trigger a temporary alert from any script
+# 6. Optional: trigger a temporary alert from any script
 ./macos/loy_ctl.sh notify "BUILD OK" "ALL PASS" success
 ```
