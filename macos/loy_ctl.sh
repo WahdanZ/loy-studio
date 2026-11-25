@@ -55,6 +55,19 @@ case "${1:-status}" in
     nohup "$PY" "$ROOT/macos/menubar_app.py" >/dev/null 2>&1 &
     echo "Launched LOY Studio macOS Menu Bar app (PID $!)."
     ;;
+  matter)
+    nohup node "$ROOT/matter/bridge.mjs" > "$ROOT/matter/matter.log" 2>&1 &
+    echo $! > "$ROOT/matter/.matter.pid"
+    sleep 2
+    cat "$ROOT/matter/matter.log"
+    ;;
+  matter-stop)
+    if [[ -f "$ROOT/matter/.matter.pid" ]]; then
+      kill "$(cat "$ROOT/matter/.matter.pid")" 2>/dev/null || true
+      rm -f "$ROOT/matter/.matter.pid"
+      echo "Stopped LOY Studio Matter Bridge."
+    fi
+    ;;
   notify)
     TITLE="${2:-DONE}"
     SUB="${3:-}"

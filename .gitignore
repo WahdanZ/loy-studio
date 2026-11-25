@@ -13,4 +13,8 @@ app/.pairing_token
 app/.last_device.json
 app/.loy_server.pid
 app/loy_server.log
+matter/node_modules/
+matter/.matter-storage/
+matter/.matter.pid
+matter/matter.log
 .DS_Store
