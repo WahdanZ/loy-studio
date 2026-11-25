@@ -4,12 +4,6 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 
 ---
 
-## The `64×64` LED Pixel Display
-
-| `64×64` (`4,096` Pixel Points · `260×260×17mm`) | Desk Animation Showcase |
-| :---: | :---: |
-| <img src="docs/screenshots/display_hardware.jpg" width="380" alt="64x64 LED Pixel Display Hardware" /> | <img src="docs/screenshots/display_desk_showcase.jpg" width="380" alt="64x64 LED Pixel Display on Desk" /> |
-
 ## App Screenshots
 
 ### Desktop Studio
