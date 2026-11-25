@@ -1,34 +1,93 @@
-name: Build Portable Desktop Apps
+name: CI & Portable Release Pipeline
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
+  test:
+    name: Verify Protocol, JS & DOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: Run protocol tests & syntax checks
+        run: |
+          pytest -q tests/test_protocol.py
+          node --check app/static/app.js
+          python -m py_compile app/server.py app/smart_features.py desktop_app.py
+
   build:
+    name: Build Portable (${{ matrix.label }})
+    needs: test
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            artifact: LOY-Studio-macOS
-          - os: windows-latest
-            artifact: LOY-Studio-Windows
+          - label: macOS-arm64
+            os: macos-14
+            artifact: LOY-Studio-macOS-arm64
+          - label: Windows-x64
+            os: windows-latest
+            artifact: LOY-Studio-Windows-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pywebview
       - name: Build portable app
         run: python build_portable.py
-      - name: Upload portable artifact
+      - name: Package macOS portable zip
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent "LOY Studio.app" "LOY-Studio-macOS-arm64.zip"
+      - name: Package Windows portable zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\LOY Studio.exe" -DestinationPath "dist\LOY-Studio-Windows-x64.zip" -Force
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/
+          path: dist/*.zip
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*.zip
