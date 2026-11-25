@@ -360,7 +360,7 @@ def render_weather_clock_bg_gif(temp_c: int, kind: str = "clear_day", city: str 
     frames: List[Image.Image] = []
     n = 12
     temp_str = f"{temp_c:+d}°C" if temp_c < 0 else f"{temp_c}°C"
-    city_short = (city or "")[:5].upper()
+    city_short = (city or "").strip()[:6].upper()
 
     for f in range(n):
         img = Image.new("RGB", (size, size), (0, 0, 0))
@@ -370,8 +370,8 @@ def render_weather_clock_bg_gif(temp_c: int, kind: str = "clear_day", city: str 
         # Subtle horizon divider between top RTC clock (y=2..28) and bottom weather scene (y=31..62)
         d.line([(4, 29), (size - 5, 29)], fill=(25, 45, 70))
 
-        # Left side (x=6..28, y=33..58): animated weather icon
-        icx, icy = 17, 46
+        # Left side (x=4..24, y=33..58): animated weather icon
+        icx, icy = 14, 46
         if kind == "clear_day":
             d.ellipse([icx - 6, icy - 6, icx + 6, icy + 6], fill=(255, 205, 35))
             for k in range(8):
@@ -407,10 +407,10 @@ def render_weather_clock_bg_gif(temp_c: int, kind: str = "clear_day", city: str 
                 if ry < 60:
                     d.line([(rx, ry), (rx - 1, min(61, ry + 3))], fill=(40, 185, 255))
 
-        # Right side (x=31..62): crisp temperature + city code
-        draw_bitmap_str(img, temp_str, 35, (255, 255, 255), center=False, x=32)
+        # Right side (x=27..63): crisp temperature + up to 6-char city name
+        draw_bitmap_str(img, temp_str, 35, (255, 255, 255), center=False, x=28)
         if city_short:
-            draw_bitmap_str(img, city_short, 48, (90, 200, 255), center=False, x=32)
+            draw_bitmap_str(img, city_short, 48, (90, 200, 255), center=False, x=27)
 
         frames.append(img)
     return _frames_to_gif(frames, duration_ms=110)

@@ -4,11 +4,15 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 
 ---
 
-## Live `64×64` Display in Action
+## Live `64×64` Display Showcase
 
-<p align="center">
-  <img src="docs/screenshots/display_live.jpg" width="420" alt="LOY Studio running live Weather + RTC Clock on 64x64 LED Display" />
-</p>
+| Live Weather + RTC Clock | Synthwave Sun Hardware Clock |
+| :---: | :---: |
+| <img src="docs/screenshots/display_weather.jpg" width="360" alt="Live Weather + RTC Clock on 64x64 LED Display" /> | <img src="docs/screenshots/display_synthwave.jpg" width="360" alt="Synthwave Sun Clock on 64x64 LED Display" /> |
+
+| Coding Work Mode (`</CODE>`) | ON AIR Meeting Mode |
+| :---: | :---: |
+| <img src="docs/screenshots/display_coding.jpg" width="360" alt="Coding Work Mode on 64x64 LED Display" /> | <img src="docs/screenshots/display_onair.jpg" width="360" alt="ON AIR Mode on 64x64 LED Display" /> |
 
 ## App Screenshots
 
