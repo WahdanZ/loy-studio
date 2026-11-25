@@ -587,22 +587,79 @@ input[type="color"] {
   display: flex;
   justify-content: center;
   align-items: center;
-  overflow: auto;
-  padding: 10px;
+  overflow: hidden;
+  padding: 8px;
   border-radius: var(--radius-md);
   background: radial-gradient(circle at center, #121520 0%, #050608 100%);
   border: 1px solid rgba(255, 255, 255, 0.04);
+  touch-action: none;
 }
 #pixelCanvas {
   image-rendering: pixelated;
   touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   cursor: crosshair;
   border-radius: 8px;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.75);
-  max-width: 100%;
+  width: min(100%, 448px);
+  aspect-ratio: 1 / 1;
   height: auto;
+  display: block;
 }
-.canvas-card.fullscreen { position: fixed; inset: 0; z-index: 100; border-radius: 0; justify-content: center; }
+.canvas-card.fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+  border-radius: 0;
+  border: none;
+  background: #050608;
+  padding: calc(10px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));
+  justify-content: space-between;
+  gap: 8px;
+  overflow: hidden;
+}
+.canvas-card.fullscreen .canvas-viewport {
+  flex: 1;
+  min-height: 0;
+  padding: 4px;
+}
+.canvas-card.fullscreen #pixelCanvas {
+  width: min(94vw, 56vh);
+  height: min(94vw, 56vh);
+  max-width: none;
+}
+.canvas-card.fullscreen .frame-strip {
+  display: none;
+}
+.quick-color-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  overflow-x: auto;
+  padding: 2px 0;
+}
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: 6px;
+}
+.emoji-btn {
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-elev);
+  font-size: 20px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: transform 0.1s, border-color 0.12s;
+}
+.emoji-btn:hover { border-color: var(--accent); transform: scale(1.06); }
+.emoji-btn:active { transform: scale(0.94); }
+.emoji-btn.active { border-color: var(--accent); background: rgba(59, 130, 246, 0.22); }
 
 .palette-row { display: flex; flex-wrap: wrap; gap: 7px; }
 .swatch {

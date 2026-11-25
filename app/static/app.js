@@ -328,8 +328,16 @@
     }
   }
 
+  let lastDrawPos = null;
+  let activeStampEmoji = null;
+
+  // Prevent iOS Safari page scroll / rubber-band while finger-drawing on canvas
+  canvas.addEventListener("touchstart", (e) => { e.preventDefault(); }, { passive: false });
+  canvas.addEventListener("touchmove", (e) => { e.preventDefault(); }, { passive: false });
+
   canvas.addEventListener("pointerdown", (e) => {
-    canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
     const [x, y] = pointerToCell(e);
     const buf = frames[activeFrame];
     if (currentTool === "picker") {
@@ -338,12 +346,18 @@
       selectTool("pen");
       return;
     }
+    if ($("chkTapPlace")?.checked && activeStampEmoji) {
+      stampGlyphToCanvas(activeStampEmoji, x, y, Number($("stampSize")?.value) || 36, null);
+      return;
+    }
     pushUndo();
     isDrawing = true;
+    lastDrawPos = [x, y];
     const rgb = currentTool === "eraser" ? [0, 0, 0] : hexToRgb(currentColor);
     if (currentTool === "fill") {
       const off = (y * gridW + x) * 3;
       floodFill(x, y, [buf[off], buf[off + 1], buf[off + 2]], rgb);
+      isDrawing = false; lastDrawPos = null;
       renderCanvas(); renderFrameStrip(); saveDraft();
       return;
     }
@@ -356,11 +370,12 @@
     if (connected && $("chkLiveDraw").checked && pts.length) {
       api("/api/control", { method: "POST", body: JSON.stringify({ action: "rt_pixel", pixels: pts, color: rgbToHex(...rgb) }) }).catch(() => {});
     }
-    renderCanvas(); renderFrameStrip();
+    renderCanvas();
   });
 
   canvas.addEventListener("pointermove", (e) => {
     if (!isDrawing) return;
+    e.preventDefault();
     const [x, y] = pointerToCell(e);
     const rgb = currentTool === "eraser" ? [0, 0, 0] : hexToRgb(currentColor);
     if (shapeStart && shapeSnapshot) {
@@ -369,18 +384,25 @@
       renderCanvas();
       return;
     }
-    const pts = plotBrush(frames[activeFrame], x, y, rgb);
-    if (connected && $("chkLiveDraw").checked && pts.length) {
-      api("/api/control", { method: "POST", body: JSON.stringify({ action: "rt_pixel", pixels: pts, color: rgbToHex(...rgb) }) }).catch(() => {});
+    if (lastDrawPos && (lastDrawPos[0] !== x || lastDrawPos[1] !== y)) {
+      drawLine(frames[activeFrame], lastDrawPos[0], lastDrawPos[1], x, y, rgb);
+    } else {
+      plotBrush(frames[activeFrame], x, y, rgb);
+    }
+    lastDrawPos = [x, y];
+    if (connected && $("chkLiveDraw").checked) {
+      api("/api/control", { method: "POST", body: JSON.stringify({ action: "rt_pixel", pixels: [[x, y]], color: rgbToHex(...rgb) }) }).catch(() => {});
     }
     renderCanvas();
   });
 
-  window.addEventListener("pointerup", () => {
+  function finishStroke() {
     if (!isDrawing) return;
-    isDrawing = false; shapeStart = null; shapeSnapshot = null;
+    isDrawing = false; shapeStart = null; shapeSnapshot = null; lastDrawPos = null;
     renderFrameStrip(); saveDraft();
-  });
+  }
+  window.addEventListener("pointerup", finishStroke);
+  window.addEventListener("pointercancel", finishStroke);
 
   function selectTool(t) {
     currentTool = t;
@@ -401,7 +423,114 @@
     renderCanvas(); renderFrameStrip();
   };
   $("btnClear").onclick = () => { pushUndo(); frames[activeFrame].fill(0); renderCanvas(); renderFrameStrip(); saveDraft(); };
-  $("btnFullscreen").onclick = () => $("canvasCard").classList.toggle("fullscreen");
+  $("btnFullscreen").onclick = () => {
+    const isFs = $("canvasCard").classList.toggle("fullscreen");
+    document.body.style.overflow = isFs ? "hidden" : "";
+    if ($("fsBtnLabel")) $("fsBtnLabel").textContent = isFs ? "Done" : "Full Draw";
+  };
+
+  // ---------------- Inline Quick Color Strip, Emoji, Text & Pixel Art Stamps ----------------
+  const QUICK_FS_COLORS = ["#ffffff", "#ef4444", "#f97316", "#facc15", "#10b981", "#06b6d4", "#3b82f6", "#a855f7", "#ec4899", "#000000"];
+  function renderQuickColorBar() {
+    const bar = $("fsQuickColors");
+    if (!bar) return;
+    bar.innerHTML = "";
+    QUICK_FS_COLORS.forEach((hex) => {
+      const s = document.createElement("button");
+      s.type = "button";
+      s.className = "swatch" + (hex.toLowerCase() === currentColor.toLowerCase() ? " active" : "");
+      s.style.background = hex;
+      s.style.flexShrink = "0";
+      s.onclick = () => { setColor(hex); renderQuickColorBar(); };
+      bar.appendChild(s);
+    });
+  }
+  renderQuickColorBar();
+
+  function stampGlyphToCanvas(text, cx, cy, pxSize, tintHex) {
+    const off = document.createElement("canvas");
+    off.width = gridW; off.height = gridH;
+    const octx = off.getContext("2d");
+    octx.clearRect(0, 0, gridW, gridH);
+    octx.textAlign = "center";
+    octx.textBaseline = "middle";
+    octx.font = `bold ${pxSize}px -apple-system, "Apple Color Emoji", "Segoe UI Emoji", sans-serif`;
+    if (tintHex) octx.fillStyle = tintHex;
+    octx.fillText(text, cx, cy);
+    const data = octx.getImageData(0, 0, gridW, gridH).data;
+    pushUndo();
+    const buf = frames[activeFrame];
+    for (let i = 0; i < gridW * gridH; i++) {
+      const a = data[i * 4 + 3];
+      if (a >= 95) {
+        buf[i * 3] = data[i * 4];
+        buf[i * 3 + 1] = data[i * 4 + 1];
+        buf[i * 3 + 2] = data[i * 4 + 2];
+      }
+    }
+    renderCanvas(); renderFrameStrip(); saveDraft();
+    toast(`Stamped "${text}" on canvas`);
+  }
+
+  const EMOJI_STAMPS = ["❤️", "🔥", "⭐", "⚡", "☕", "🎮", "🚀", "😎", "👾", "🎵", "🌙", "🌈", "💎", "🤖", "🐱", "🍕", "✅", "🎉", "💻", "🎧"];
+  function initStampStudio() {
+    const eGrid = $("emojiStampGrid");
+    if (eGrid) {
+      eGrid.innerHTML = "";
+      EMOJI_STAMPS.forEach((em) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "emoji-btn";
+        b.textContent = em;
+        b.onclick = () => {
+          activeStampEmoji = em;
+          eGrid.querySelectorAll(".emoji-btn").forEach((x) => x.classList.toggle("active", x === b));
+          if ($("chkTapPlace")?.checked) {
+            toast(`Tap anywhere on canvas to place ${em}`);
+          } else {
+            stampGlyphToCanvas(em, gridW / 2, gridH / 2 + 2, Number($("stampSize")?.value) || 36, null);
+          }
+        };
+        eGrid.appendChild(b);
+      });
+    }
+    if ($("btnStampTextCenter")) {
+      $("btnStampTextCenter").onclick = () => {
+        const txt = ($("stampTextInput")?.value || "").trim();
+        if (!txt) return toast("Type text first");
+        const sz = Math.min(34, Math.max(12, Math.round((Number($("stampSize")?.value) || 36) * 0.65)));
+        stampGlyphToCanvas(txt, gridW / 2, gridH / 2 + 1, sz, currentColor);
+      };
+    }
+
+    const PIXEL_TEMPLATES = [
+      { name: "❤️ Pixel Heart", fn: (b) => { for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) { const nx = (x - 32) / 18, ny = (30 - y) / 18; if (((nx*nx + ny*ny - 1)**3 - nx*nx*ny*ny*ny) <= 0) { const i = (y*64+x)*3; b[i]=255; b[i+1]=35; b[i+2]=85; } } } },
+      { name: "😊 Cyber Smiley", fn: (b) => { for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) { const d = Math.hypot(x-32, y-32); if (d <= 25 && d >= 22) { const i=(y*64+x)*3; b[i]=255; b[i+1]=210; b[i+2]=30; } if (Math.hypot(x-23,y-25)<3.5 || Math.hypot(x-41,y-25)<3.5) { const i=(y*64+x)*3; b[i]=5; b[i+1]=225; b[i+2]=255; } if (y>35 && Math.abs(d-13)<2 && x>20 && x<44) { const i=(y*64+x)*3; b[i]=255; b[i+1]=210; b[i+2]=30; } } } },
+      { name: "⚡ Neon Bolt", fn: (b) => { const pts = [[36,6],[18,34],[32,34],[26,58],[46,28],[32,28]]; const c=document.createElement("canvas"); c.width=64; c.height=64; const x=c.getContext("2d"); x.fillStyle="#facc15"; x.beginPath(); pts.forEach(([px,py],i)=>i?x.lineTo(px,py):x.moveTo(px,py)); x.closePath(); x.fill(); const d=x.getImageData(0,0,64,64).data; for(let i=0;i<4096;i++) if(d[i*4+3]>100){ b[i*3]=d[i*4]; b[i*3+1]=d[i*4+1]; b[i*3+2]=d[i*4+2]; } } },
+      { name: "👑 Gold Crown", fn: (b) => { const c=document.createElement("canvas"); c.width=64; c.height=64; const x=c.getContext("2d"); x.fillStyle="#fbbf24"; x.beginPath(); x.moveTo(10,48); x.lineTo(10,20); x.lineTo(22,32); x.lineTo(32,14); x.lineTo(42,32); x.lineTo(54,20); x.lineTo(54,48); x.closePath(); x.fill(); x.fillStyle="#ef4444"; x.fillRect(29,36,6,6); x.fillStyle="#06b6d4"; x.fillRect(16,38,5,5); x.fillRect(43,38,5,5); const d=x.getImageData(0,0,64,64).data; for(let i=0;i<4096;i++) if(d[i*4+3]>100){ b[i*3]=d[i*4]; b[i*3+1]=d[i*4+1]; b[i*3+2]=d[i*4+2]; } } },
+      { name: "👾 Arcade Ghost", fn: (b) => { const c=document.createElement("canvas"); c.width=64; c.height=64; const x=c.getContext("2d"); x.fillStyle="#ec4899"; x.beginPath(); x.arc(32,26,18,Math.PI,0); x.lineTo(50,52); x.lineTo(42,46); x.lineTo(36,52); x.lineTo(28,46); x.lineTo(22,52); x.lineTo(14,52); x.closePath(); x.fill(); x.fillStyle="#fff"; x.fillRect(22,22,7,9); x.fillRect(35,22,7,9); x.fillStyle="#2563eb"; x.fillRect(25,25,4,5); x.fillRect(38,25,4,5); const d=x.getImageData(0,0,64,64).data; for(let i=0;i<4096;i++) if(d[i*4+3]>100){ b[i*3]=d[i*4]; b[i*3+1]=d[i*4+1]; b[i*3+2]=d[i*4+2]; } } },
+      { name: "🌈 Rainbow Arch", fn: (b) => { const cols=[[239,68,68],[249,115,22],[250,204,21],[16,185,129],[6,182,212],[139,92,246]]; for(let y=0;y<52;y++) for(let x=0;x<64;x++){ const r=Math.hypot(x-32,52-y); const band=Math.floor((30-r)/3.5); if(band>=0 && band<cols.length){ const i=(y*64+x)*3; b[i]=cols[band][0]; b[i+1]=cols[band][1]; b[i+2]=cols[band][2]; } } } },
+    ];
+    const tGrid = $("pixelTemplateGrid");
+    if (tGrid) {
+      tGrid.innerHTML = "";
+      PIXEL_TEMPLATES.forEach((tpl) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sm";
+        btn.textContent = tpl.name;
+        btn.onclick = () => {
+          pushUndo();
+          frames[activeFrame].fill(0);
+          tpl.fn(frames[activeFrame]);
+          renderCanvas(); renderFrameStrip(); saveDraft();
+          toast(`Loaded ${tpl.name} — draw or remix!`);
+        };
+        tGrid.appendChild(btn);
+      });
+    }
+  }
+  initStampStudio();
   $("btnZoomIn").onclick = () => { zoomScale = Math.min(12, zoomScale + 1); updateCanvasSize(); };
   $("btnZoomOut").onclick = () => { zoomScale = Math.max(3, zoomScale - 1); updateCanvasSize(); };
   ["chkGrid", "chkLedSim", "chkOnion"].forEach((id) => ($(id).onchange = renderCanvas));

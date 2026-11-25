@@ -10,7 +10,7 @@
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <title>LOY Studio — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=9" />
+  <link rel="stylesheet" href="/static/style.css?v=10" />
 </head>
 <body>
   <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
@@ -319,11 +319,12 @@
       <!-- ==================== CREATE STUDIO ==================== -->
       <section id="wsCreate" class="workspace">
         <div class="pill-bar no-scrollbar">
-          <button class="pill active" data-sub="subPixel"><svg class="ico sm"><use href="#i-brush"/></svg> Pixel</button>
+          <button class="pill active" data-sub="subPixel"><svg class="ico sm"><use href="#i-brush"/></svg> Pixel &amp; Colors</button>
+          <button class="pill" data-sub="subStamps"><svg class="ico sm"><use href="#i-sparkles"/></svg> Emoji, Text &amp; Art</button>
           <button class="pill" data-sub="subAnim"><svg class="ico sm"><use href="#i-play"/></svg> Animate</button>
           <button class="pill" data-sub="subMedia"><svg class="ico sm"><use href="#i-grid"/></svg> Photo / Video</button>
-          <button class="pill" data-sub="subTextQr">Text &amp; QR</button>
-          <button class="pill" data-sub="subProc"><svg class="ico sm"><use href="#i-sparkles"/></svg> FX &amp; Avatar</button>
+          <button class="pill" data-sub="subTextQr">Scroll Text &amp; QR</button>
+          <button class="pill" data-sub="subProc">FX &amp; Avatar</button>
         </div>
 
         <div class="studio-layout">
@@ -343,13 +344,16 @@
                 <button id="btnUndo" class="btn sm icon-btn" title="Undo"><svg class="ico sm"><use href="#i-undo"/></svg></button>
                 <button id="btnRedo" class="btn sm icon-btn" title="Redo"><svg class="ico sm"><use href="#i-redo"/></svg></button>
                 <button id="btnClear" class="btn sm icon-btn" title="Clear"><svg class="ico sm"><use href="#i-trash"/></svg></button>
-                <button id="btnFullscreen" class="btn sm icon-btn" title="Fullscreen"><svg class="ico sm"><use href="#i-maximize"/></svg></button>
+                <button id="btnFullscreen" class="btn sm primary" title="Fullscreen Draw"><svg class="ico sm"><use href="#i-maximize"/></svg> <span id="fsBtnLabel">Full Draw</span></button>
               </div>
             </div>
 
             <div class="canvas-viewport">
               <canvas id="pixelCanvas" width="448" height="448"></canvas>
             </div>
+
+            <!-- Inline Quick Color Strip (Always visible on mobile & inside Fullscreen Draw!) -->
+            <div id="fsQuickColors" class="quick-color-bar no-scrollbar"></div>
 
             <div class="scroll-strip no-scrollbar" style="width:100%;">
               <label class="inline muted" style="flex-shrink:0;">Size <input id="brushSize" type="number" min="1" max="5" value="1" style="width:48px;" /></label>
@@ -391,6 +395,32 @@
                   <input id="saveArtName" type="text" placeholder="Save creation as..." style="flex:1;" />
                   <button id="btnSaveCreation" class="btn sm primary">Save</button>
                 </div>
+              </div>
+            </div>
+
+            <div id="subStamps" class="sub-pane">
+              <div class="card" style="margin-bottom:14px;">
+                <div class="card-header"><h2><svg class="ico"><use href="#i-sparkles"/></svg> Emoji &amp; Text Stamps</h2><span class="badge blue">On Canvas</span></div>
+                <div class="inline">
+                  <input id="stampTextInput" type="text" value="HI!" placeholder="Type text to stamp..." style="flex:1;" />
+                  <select id="stampSize" style="width:94px;">
+                    <option value="22">Small</option>
+                    <option value="36" selected>Medium</option>
+                    <option value="52">Large</option>
+                  </select>
+                </div>
+                <div class="inline">
+                  <button id="btnStampTextCenter" class="btn sm primary" style="flex:1;">Stamp Text</button>
+                  <label class="inline muted" style="font-size:12px;"><input id="chkTapPlace" type="checkbox" /> Tap canvas to place</label>
+                </div>
+                <h3>Tap Emoji to Stamp on Canvas</h3>
+                <div id="emojiStampGrid" class="emoji-grid"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-header"><h2>Starter Pixel Art Templates</h2><span class="badge green">Editable</span></div>
+                <p class="muted" style="font-size:12px;">Loads crisp pixel art directly onto your canvas so you can color &amp; remix it.</p>
+                <div id="pixelTemplateGrid" class="grid-2" style="gap:8px;"></div>
               </div>
             </div>
 
@@ -820,6 +850,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=9"></script>
+  <script src="/static/app.js?v=10"></script>
 </body>
 </html>
