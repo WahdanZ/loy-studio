@@ -10,7 +10,7 @@
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <title>LOY Studio — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=8" />
+  <link rel="stylesheet" href="/static/style.css?v=9" />
 </head>
 <body>
   <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
@@ -758,12 +758,16 @@
               <img id="phoneQrImg" alt="Scan to open LOY Studio on phone" style="width:152px;height:152px;image-rendering:pixelated;" />
             </div>
             <div style="display:flex;flex-direction:column;gap:10px;min-width:0;">
-              <p class="muted" id="phoneLanHint">Scan QR with your phone camera on the same Wi-Fi to control your panel remotely.</p>
+              <p class="muted" id="phoneLanHint">Scan QR with your phone camera on the same Wi-Fi, then sign in with your password.</p>
               <div class="inline">
                 <input id="phoneUrlBox" type="text" readonly style="flex:1;font-family:var(--font-mono);font-size:12px;" />
-                <button id="btnCopyPhoneUrl" class="btn sm"><svg class="ico sm"><use href="#i-copy"/></svg> Copy</button>
-                <button id="btnRotateToken" class="btn sm"><svg class="ico sm"><use href="#i-refresh"/></svg> Rotate</button>
+                <button id="btnCopyPhoneUrl" class="btn sm"><svg class="ico sm"><use href="#i-copy"/></svg> Copy URL</button>
               </div>
+              <div class="inline" style="padding-top:6px;border-top:1px solid var(--border);">
+                <input id="lanPwdInput" type="password" placeholder="New Wi-Fi password (empty = off)" style="flex:1;" />
+                <button id="btnSaveLanPwd" class="btn sm primary">Save Password</button>
+              </div>
+              <div id="lanPwdHint" class="muted" style="font-size:11.5px;"></div>
               <div>
                 <h3>Connected Clients (<span id="clientCount">0</span>)</h3>
                 <div id="connectedClientsList" class="muted" style="margin-top:4px;">None</div>
@@ -799,7 +803,23 @@
     <button class="dock-item" data-ws="wsLive"><svg class="ico"><use href="#i-zap"/></svg><span>Smart</span></button>
   </nav>
 
+  <!-- Password Unlock Modal (Phone / LAN Clients) -->
+  <div id="authModal" class="hidden" style="position:fixed;inset:0;z-index:1000;background:rgba(6,7,11,0.88);backdrop-filter:blur(16px);display:grid;place-items:center;padding:20px;">
+    <form id="authForm" class="card" style="width:100%;max-width:340px;gap:14px;">
+      <div class="inline" style="gap:10px;">
+        <div class="brand-mark"><svg class="ico"><use href="#i-logo"/></svg></div>
+        <div>
+          <h2 style="font-size:16px;">Unlock LOY Studio</h2>
+          <p class="muted" style="font-size:12px;">Enter your Wi-Fi access password</p>
+        </div>
+      </div>
+      <input id="authPwdInput" type="password" placeholder="Password" autocomplete="current-password" required style="width:100%;padding:11px 12px;font-size:15px;" />
+      <div id="authError" class="hidden" style="color:#fca5a5;font-size:12px;font-weight:600;"></div>
+      <button type="submit" class="btn primary full" style="padding:11px;">Unlock</button>
+    </form>
+  </div>
+
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=8"></script>
+  <script src="/static/app.js?v=9"></script>
 </body>
 </html>

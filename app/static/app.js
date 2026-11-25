@@ -54,11 +54,41 @@
     return out;
   }
 
+  function getLanToken() {
+    try { return localStorage.getItem("loy_lan_token") || ""; } catch (_) { return ""; }
+  }
+  function setLanToken(tok) {
+    try {
+      if (tok) localStorage.setItem("loy_lan_token", tok);
+      else localStorage.removeItem("loy_lan_token");
+    } catch (_) {}
+  }
+  function showAuthModal(msg) {
+    if ($("authModal")) $("authModal").classList.remove("hidden");
+    if ($("offlineBanner")) $("offlineBanner").classList.add("hidden");
+    if ($("authError")) {
+      $("authError").textContent = msg || "";
+      $("authError").classList.toggle("hidden", !msg);
+    }
+    setTimeout(() => $("authPwdInput")?.focus(), 50);
+  }
+  function hideAuthModal() {
+    if ($("authModal")) $("authModal").classList.add("hidden");
+  }
+
   async function api(path, opts = {}) {
-    const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+    const tok = getLanToken();
+    const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+    if (tok) headers["X-LOY-Token"] = tok;
+    const res = await fetch(path, { ...opts, headers });
     const text = await res.text();
     let data = {};
     try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { error: text || `HTTP ${res.status}` }; }
+    if (res.status === 401 && data.auth_required) {
+      setLanToken("");
+      showAuthModal("");
+      throw new Error("Password required");
+    }
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
   }
@@ -1357,29 +1387,63 @@
     }
   }
 
-  async function loadPhoneConnect(rotate = false) {
+  async function loadPhoneConnect() {
     try {
-      const data = await api(rotate ? "/api/phone_connect/rotate" : "/api/phone_connect", { method: rotate ? "POST" : "GET" });
+      const data = await api("/api/phone_connect");
       $("phoneQrImg").src = "data:image/png;base64," + data.qr_png_b64;
       $("phoneUrlBox").value = data.url;
       $("lanStatusBadge").textContent = data.lan_enabled ? `LAN Active (${data.lan_ip})` : "Localhost Only";
       $("lanStatusBadge").className = "badge " + (data.lan_enabled ? "green" : "amber");
       $("phoneLanHint").innerHTML = data.lan_enabled
-        ? `Scan this QR code with your iPhone or Android camera on the same Wi-Fi. Pairing token is embedded automatically.`
-        : `Currently bound to 127.0.0.1 only. Restart with <code>python app/server.py --lan</code> (or <code>macos/loy_ctl.sh start --lan</code>) to enable phone access.`;
+        ? `Scan this QR code with your iPhone or Android camera on the same Wi-Fi — no URL token needed.`
+        : `Currently bound to 127.0.0.1 only. Restart with <code>python app/server.py --lan</code> to enable phone access.`;
+      if ($("lanPwdHint")) {
+        $("lanPwdHint").textContent = data.password_enabled
+          ? (data.is_default_password ? "Current Wi-Fi password is the default (1234). Set your own password above." : "Wi-Fi password protection is active.")
+          : "Wi-Fi password is disabled (anyone on your local Wi-Fi can connect).";
+      }
       renderClientsList(data.clients || []);
     } catch (_) {}
   }
   $("btnCopyPhoneUrl").onclick = () => {
     navigator.clipboard?.writeText($("phoneUrlBox").value);
-    toast("Copied paired URL");
+    toast("Copied URL");
   };
-  $("btnRotateToken").onclick = () => loadPhoneConnect(true).then(() => toast("Pairing token rotated — rescan QR on phones"));
+  if ($("btnSaveLanPwd")) $("btnSaveLanPwd").onclick = async () => {
+    try {
+      const pwd = $("lanPwdInput").value.trim();
+      const res = await api("/api/auth/set_password", { method: "POST", body: JSON.stringify({ password: pwd }) });
+      if (res.token) setLanToken(res.token);
+      $("lanPwdInput").value = "";
+      toast(res.password_enabled ? "Wi-Fi password updated!" : "Wi-Fi password disabled");
+      loadPhoneConnect();
+    } catch (err) { toast(err.message); }
+  };
+
+  if ($("authForm")) $("authForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const pwd = $("authPwdInput").value;
+    try {
+      const res = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ password: pwd }) });
+      if (res.token) setLanToken(res.token);
+      $("authPwdInput").value = "";
+      hideAuthModal();
+      toast("Unlocked LOY Studio");
+      initAuthenticatedData();
+    } catch (err) {
+      showAuthModal(err.message || "Incorrect password");
+    }
+  };
 
   let ws = null;
+  let wsRetryTimer = null;
   function connectWebSocket() {
+    if (ws) { try { ws.close(); } catch (_) {} }
+    clearTimeout(wsRetryTimer);
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(`${proto}//${location.host}/ws`);
+    const tok = getLanToken();
+    const qs = tok ? `?token=${encodeURIComponent(tok)}` : "";
+    ws = new WebSocket(`${proto}//${location.host}/ws${qs}`);
     ws.onopen = () => {
       $("offlineBanner").classList.add("hidden");
     };
@@ -1407,11 +1471,19 @@
         }
       } catch (_) {}
     };
-    ws.onclose = () => {
+    ws.onclose = async () => {
+      // Check if closed due to auth vs real server offline
+      try {
+        const st = await api("/api/auth/status");
+        if (!st.authenticated) {
+          showAuthModal("");
+          return;
+        }
+      } catch (_) {}
       $("offlineBanner").classList.remove("hidden");
-      setTimeout(connectWebSocket, 2500);
+      wsRetryTimer = setTimeout(connectWebSocket, 2500);
     };
-    ws.onerror = () => ws.close();
+    ws.onerror = () => { try { ws.close(); } catch (_) {} };
   }
 
   // Register PWA Service Worker when running in a secure context (localhost / HTTPS)
@@ -1465,7 +1537,18 @@
   renderRecentColors();
   updateCanvasSize();
   renderFrameStrip();
-  api("/api/status").then(applyStatus).catch(() => {});
-  loadWorkSchedule();
-  connectWebSocket();
+  function initAuthenticatedData() {
+    api("/api/status").then(applyStatus).catch(() => {});
+    loadWorkSchedule();
+    connectWebSocket();
+  }
+
+  api("/api/auth/status").then((st) => {
+    if (st.authenticated) {
+      hideAuthModal();
+      initAuthenticatedData();
+    } else {
+      showAuthModal("");
+    }
+  }).catch(() => initAuthenticatedData());
 })();

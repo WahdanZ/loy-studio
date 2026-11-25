@@ -8,6 +8,7 @@ __pycache__/
 .pytest_cache/
 app/local_library.json
 app/smart_config.json
+app/.lan_auth.json
 app/.pairing_token
 app/.last_device.json
 app/.loy_server.pid

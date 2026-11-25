@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import base64
 import datetime
+import hashlib
 import io
 import json
 import math
@@ -97,6 +98,39 @@ TOKEN_FILE = Path(__file__).resolve().parent / ".pairing_token"
 LAST_DEVICE_FILE = Path(__file__).resolve().parent / ".last_device.json"
 SCHEDULE_FILE = Path(__file__).resolve().parent / "work_schedule.json"
 SMART_CONFIG_FILE = Path(__file__).resolve().parent / "smart_config.json"
+LAN_AUTH_FILE = Path(__file__).resolve().parent / ".lan_auth.json"
+
+
+def _hash_password(password: str, salt: str) -> str:
+    return hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+
+
+def _load_lan_auth() -> Dict[str, Any]:
+    if LAN_AUTH_FILE.exists():
+        try:
+            data = json.loads(LAN_AUTH_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "salt" in data and "hash" in data:
+                return data
+        except Exception:
+            pass
+    salt = secrets.token_hex(12)
+    data = {
+        "enabled": True,
+        "salt": salt,
+        "hash": _hash_password("1234", salt),
+        "session_secret": secrets.token_urlsafe(24),
+        "is_default": True,
+    }
+    _save_lan_auth(data)
+    return data
+
+
+def _save_lan_auth(data: Dict[str, Any]) -> None:
+    LAN_AUTH_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    try:
+        LAN_AUTH_FILE.chmod(0o600)
+    except OSError:
+        pass
 
 DEFAULT_SMART_CONFIG: Dict[str, Any] = {
     "context_enabled": False,
@@ -267,41 +301,110 @@ def _parse_hex_rgb(hex_color: str) -> tuple[int, int, int]:
     return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
 
 
-async def handle_index(req: web.Request) -> web.StreamResponse:
-    """Serve LOY Studio shell; if ?pair=<token> matches on LAN, set HttpOnly session cookie."""
-    pair = req.query.get("pair")
-    if pair and secrets.compare_digest(pair, state.pairing_token):
-        resp = web.HTTPFound("/")
-        resp.set_cookie("loy_session", state.pairing_token, httponly=True, samesite="Lax", max_age=86400 * 30)
-        return resp
+async def handle_index(_req: web.Request) -> web.StreamResponse:
+    """Serve LOY Studio shell cleanly (no URL pairing tokens)."""
     return web.FileResponse(STATIC_DIR / "index.html")
+
+
+def _is_loopback_req(req: web.Request) -> bool:
+    peer = req.remote or "127.0.0.1"
+    return peer in ("127.0.0.1", "::1", "localhost") or peer.startswith("127.")
+
+
+def _is_lan_authenticated(req: web.Request) -> bool:
+    if _is_loopback_req(req):
+        return True
+    auth = _load_lan_auth()
+    if not auth.get("enabled", True):
+        return True
+    expected = str(auth.get("session_secret", ""))
+    if not expected:
+        return False
+    token = (
+        req.headers.get("X-LOY-Token")
+        or req.query.get("token")
+        or req.cookies.get("loy_session")
+        or ""
+    )
+    return bool(token) and secrets.compare_digest(token, expected)
 
 
 @web.middleware
 async def local_auth_middleware(req: web.Request, handler):
     """
     Protect API & WebSocket endpoints when LAN access is enabled:
-      - Loopback clients (127.0.0.1 / ::1) are always trusted.
-      - Non-loopback LAN clients must present a valid pairing cookie (`loy_session`),
-        `X-LOY-Token` header, or `?token=` query param.
+      - Loopback clients (127.0.0.1 / ::1) on your Mac are always trusted.
+      - Non-loopback LAN clients authenticate with your chosen password via /api/auth/login
+        and present the returned session token via X-LOY-Token header, ?token= (WebSocket), or cookie.
     """
-    peer = req.remote or "127.0.0.1"
-    is_loopback = peer in ("127.0.0.1", "::1", "localhost") or peer.startswith("127.")
-    if is_loopback or req.path == "/" or req.path.startswith("/static/") or req.path.startswith("/gifs/"):
+    public_paths = ("/", "/api/auth/status", "/api/auth/login", "/api/auth/logout")
+    if (
+        _is_loopback_req(req)
+        or req.path in public_paths
+        or req.path.startswith("/static/")
+        or req.path.startswith("/gifs/")
+        or req.path.startswith("/api/hw_clock_preview/")
+    ):
         return await handler(req)
 
-    token = (
-        req.cookies.get("loy_session")
-        or req.headers.get("X-LOY-Token")
-        or req.query.get("token")
-        or ""
-    )
-    if not secrets.compare_digest(token, state.pairing_token):
+    if not _is_lan_authenticated(req):
         return web.json_response(
-            {"error": "Unauthorized LAN client. Scan the 'Connect from Phone' QR code on your Mac to pair."},
+            {"error": "Password required to access LOY Studio over Wi-Fi.", "auth_required": True},
             status=401,
         )
     return await handler(req)
+
+
+async def handle_auth_status(req: web.Request) -> web.Response:
+    auth = _load_lan_auth()
+    return web.json_response({
+        "authenticated": _is_lan_authenticated(req),
+        "is_local": _is_loopback_req(req),
+        "password_enabled": bool(auth.get("enabled", True)),
+        "is_default_password": bool(auth.get("is_default", False)),
+    })
+
+
+async def handle_auth_login(req: web.Request) -> web.Response:
+    body = await req.json()
+    password = str(body.get("password", ""))
+    auth = _load_lan_auth()
+    if not auth.get("enabled", True):
+        return web.json_response({"ok": True, "token": auth.get("session_secret", "")})
+    if not secrets.compare_digest(_hash_password(password, auth["salt"]), auth["hash"]):
+        return web.json_response({"error": "Incorrect password"}, status=401)
+    token = auth["session_secret"]
+    resp = web.json_response({"ok": True, "token": token})
+    resp.set_cookie("loy_session", token, httponly=True, samesite="Lax", max_age=86400 * 30)
+    return resp
+
+
+async def handle_auth_set_password(req: web.Request) -> web.Response:
+    body = await req.json()
+    new_pwd = str(body.get("password", "")).strip()
+    auth = _load_lan_auth()
+    if not new_pwd:
+        auth["enabled"] = False
+        auth["is_default"] = False
+    else:
+        salt = secrets.token_hex(12)
+        auth["enabled"] = True
+        auth["salt"] = salt
+        auth["hash"] = _hash_password(new_pwd, salt)
+        auth["session_secret"] = secrets.token_urlsafe(24)
+        auth["is_default"] = False
+    _save_lan_auth(auth)
+    return web.json_response({
+        "ok": True,
+        "password_enabled": auth["enabled"],
+        "token": auth["session_secret"],
+    })
+
+
+async def handle_auth_logout(_req: web.Request) -> web.Response:
+    resp = web.json_response({"ok": True})
+    resp.del_cookie("loy_session")
+    return resp
 
 
 async def handle_ws(req: web.Request) -> web.WebSocketResponse:
@@ -329,12 +432,12 @@ async def handle_ws(req: web.Request) -> web.WebSocketResponse:
 
 
 async def handle_phone_connect(_req: web.Request) -> web.Response:
-    """Return Mac LAN IP, paired connection URL, QR PNG (base64), and connected clients."""
+    """Return clean Mac LAN URL (no token), QR PNG (base64), password status, and connected clients."""
     import qrcode
 
     lan_ip = _detect_lan_ip()
     port = state.bound_port
-    url = f"http://{lan_ip}:{port}/?pair={state.pairing_token}"
+    url = f"http://{lan_ip}:{port}"
     qr = qrcode.QRCode(border=2, box_size=6)
     qr.add_data(url)
     qr.make(fit=True)
@@ -342,12 +445,15 @@ async def handle_phone_connect(_req: web.Request) -> web.Response:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     qr_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    auth = _load_lan_auth()
     return web.json_response({
         "lan_enabled": state.lan_enabled,
         "lan_ip": lan_ip,
         "port": port,
         "url": url,
-        "base_url": f"http://{lan_ip}:{port}",
+        "base_url": url,
+        "password_enabled": bool(auth.get("enabled", True)),
+        "is_default_password": bool(auth.get("is_default", False)),
         "qr_png_b64": qr_b64,
         "clients": state.clients_list(),
     })
@@ -2602,6 +2708,10 @@ def create_app() -> web.Application:
     app.router.add_static("/static", STATIC_DIR)
     if GIFS_DIR.exists():
         app.router.add_static("/gifs", GIFS_DIR)
+    app.router.add_get("/api/auth/status", handle_auth_status)
+    app.router.add_post("/api/auth/login", handle_auth_login)
+    app.router.add_post("/api/auth/set_password", handle_auth_set_password)
+    app.router.add_post("/api/auth/logout", handle_auth_logout)
     app.router.add_get("/api/status", handle_status)
     app.router.add_get("/api/phone_connect", handle_phone_connect)
     app.router.add_post("/api/phone_connect/rotate", handle_rotate_token)
@@ -2708,7 +2818,7 @@ def main() -> None:
     print(f"LOY Studio 2.0 running locally at http://127.0.0.1:{port}")
     if state.lan_enabled:
         lan_ip = _detect_lan_ip()
-        print(f"Phone / LAN access enabled (pairing required): http://{lan_ip}:{port}/?pair={state.pairing_token}")
+        print(f"Phone / LAN access enabled (password protected): http://{lan_ip}:{port}")
     web.run_app(create_app(), host=host, port=port)
 
 
