@@ -233,8 +233,22 @@
 
   function renderFrameStrip() {
     const strip = $("frameStrip");
+    const sb = $("animStoryboardGrid");
+    if ($("animFrameBadge")) $("animFrameBadge").textContent = `${frames.length} frame${frames.length === 1 ? "" : "s"}`;
     strip.innerHTML = "";
+    if (sb) sb.innerHTML = "";
     frames.forEach((buf, idx) => {
+      const makeThumbCanvas = () => {
+        const c = document.createElement("canvas");
+        c.width = gridW; c.height = gridH;
+        const cctx = c.getContext("2d");
+        const img = cctx.createImageData(gridW, gridH);
+        for (let p = 0; p < gridW * gridH; p++) {
+          img.data[p * 4] = buf[p * 3]; img.data[p * 4 + 1] = buf[p * 3 + 1]; img.data[p * 4 + 2] = buf[p * 3 + 2]; img.data[p * 4 + 3] = 255;
+        }
+        cctx.putImageData(img, 0, 0);
+        return c;
+      };
       const wrap = document.createElement("div");
       wrap.className = "frame-thumb" + (idx === activeFrame ? " active" : "");
       wrap.draggable = true;
@@ -248,20 +262,24 @@
         draggedFrameIdx = null;
         renderCanvas(); renderFrameStrip();
       };
-      const c = document.createElement("canvas");
-      c.width = gridW; c.height = gridH;
-      const cctx = c.getContext("2d");
-      const img = cctx.createImageData(gridW, gridH);
-      for (let p = 0; p < gridW * gridH; p++) {
-        img.data[p * 4] = buf[p * 3]; img.data[p * 4 + 1] = buf[p * 3 + 1]; img.data[p * 4 + 2] = buf[p * 3 + 2]; img.data[p * 4 + 3] = 255;
-      }
-      cctx.putImageData(img, 0, 0);
-      wrap.appendChild(c);
+      wrap.appendChild(makeThumbCanvas());
       const lbl = document.createElement("div");
       lbl.textContent = `#${idx + 1}`;
       wrap.appendChild(lbl);
       wrap.onclick = () => { activeFrame = idx; renderCanvas(); renderFrameStrip(); };
       strip.appendChild(wrap);
+
+      if (sb) {
+        const cell = document.createElement("div");
+        cell.className = "sb-cell" + (idx === activeFrame ? " active" : "");
+        cell.appendChild(makeThumbCanvas());
+        const num = document.createElement("span");
+        num.className = "sb-num";
+        num.textContent = `${idx + 1}`;
+        cell.appendChild(num);
+        cell.onclick = () => { activeFrame = idx; renderCanvas(); renderFrameStrip(); };
+        sb.appendChild(cell);
+      }
     });
   }
 
@@ -926,11 +944,293 @@
     frames = out; activeFrame = 0; renderCanvas(); renderFrameStrip(); toast(`Kept ${frames.length} unique frames`);
   };
   $("btnPlayAnim").onclick = (e) => {
-    if (playTimer) { clearInterval(playTimer); playTimer = null; e.target.textContent = "Play"; return; }
-    e.target.textContent = "Stop";
+    if (playTimer) { clearInterval(playTimer); playTimer = null; $("btnPlayAnim").textContent = "Play"; return; }
+    $("btnPlayAnim").textContent = "Stop";
     const delay = Math.max(40, Number($("gifDelay").value) || 140);
     playTimer = setInterval(() => { activeFrame = (activeFrame + 1) % frames.length; renderCanvas(); renderFrameStrip(); }, delay);
   };
+
+  if ($("animSpeedSlider")) {
+    $("animSpeedSlider").oninput = (e) => {
+      const ms = Number(e.target.value) || 140;
+      $("gifDelay").value = ms;
+      if ($("animSpeedVal")) $("animSpeedVal").textContent = `${ms} ms`;
+      if (playTimer) {
+        clearInterval(playTimer);
+        playTimer = setInterval(() => { activeFrame = (activeFrame + 1) % frames.length; renderCanvas(); renderFrameStrip(); }, ms);
+      }
+    };
+  }
+  if ($("animBriSlider")) {
+    $("animBriSlider").oninput = (e) => {
+      const v = Number(e.target.value);
+      if ($("animBriVal")) $("animBriVal").textContent = `${v} / 15`;
+      if ($("homeBriSlider")) $("homeBriSlider").value = v;
+      if ($("homeBriVal")) $("homeBriVal").textContent = v;
+      sendCtrl({ action: "brightness", value: v });
+    };
+  }
+
+  // ---------------- 1-Tap Animated Pixel Scenes & Neon Sign Builder ----------------
+  function loadGeneratedAnimation(newFrames, delayMs, label) {
+    if (floatingItem) cancelFloatingItem();
+    if (playTimer) { clearInterval(playTimer); playTimer = null; }
+    frames = newFrames;
+    activeFrame = 0;
+    $("gifDelay").value = delayMs;
+    if ($("animSpeedSlider")) $("animSpeedSlider").value = delayMs;
+    if ($("animSpeedVal")) $("animSpeedVal").textContent = `${delayMs} ms`;
+    renderCanvas(); renderFrameStrip(); saveDraft();
+    $("btnPlayAnim").textContent = "Stop";
+    playTimer = setInterval(() => { activeFrame = (activeFrame + 1) % frames.length; renderCanvas(); }, delayMs);
+    if (window.innerWidth <= 780 && $("canvasCard")) $("canvasCard").scrollIntoView({ behavior: "smooth", block: "start" });
+    toast(`Generated ${label} (${frames.length} frames) — tap Send!`);
+  }
+
+  function ctxToFrameBuf(drawFn) {
+    const off = document.createElement("canvas");
+    off.width = 64; off.height = 64;
+    const octx = off.getContext("2d");
+    drawFn(octx);
+    const d = octx.getImageData(0, 0, 64, 64).data;
+    const buf = new Uint8Array(64 * 64 * 3);
+    for (let i = 0; i < 4096; i++) {
+      buf[i * 3] = d[i * 4]; buf[i * 3 + 1] = d[i * 4 + 1]; buf[i * 3 + 2] = d[i * 4 + 2];
+    }
+    return buf;
+  }
+
+  const PIXEL_SCENES = [
+    {
+      em: "🌅", label: "Synthwave Highway", delay: 110,
+      gen: () => Array.from({ length: 12 }, (_, f) => ctxToFrameBuf((c) => {
+        // Deep violet-blue night sky gradient
+        for (let y = 0; y < 34; y++) {
+          const r = Math.round(18 + y * 2.8), g = Math.round(8 + y * 0.4), b = Math.round(62 + y * 2.2);
+          c.fillStyle = `rgb(${r},${g},${b})`; c.fillRect(0, y, 64, 1);
+        }
+        // Twinkling stars
+        [[7,6],[15,12],[49,7],[56,14],[24,5],[41,11],[11,18],[53,20]].forEach(([sx, sy], i) => {
+          c.fillStyle = (f + i) % 3 === 0 ? "#f472b6" : "#fde047";
+          c.fillRect(sx, sy, 1, 1);
+          if ((f + i) % 4 === 0) { c.fillRect(sx - 1, sy, 3, 1); c.fillRect(sx, sy - 1, 1, 3); }
+        });
+        // Striped retro sun
+        for (let y = 11; y <= 31; y++) {
+          for (let x = 21; x <= 43; x++) {
+            if (Math.hypot(x - 32, y - 22) <= 10.5) {
+              if (y > 22 && (y - 22) % 3 === 0) continue;
+              const t = (y - 11) / 20;
+              c.fillStyle = t < 0.45 ? "#fde047" : t < 0.72 ? "#fb923c" : "#ec4899";
+              c.fillRect(x, y, 1, 1);
+            }
+          }
+        }
+        // Mountain silhouette
+        c.fillStyle = "#090414";
+        c.beginPath(); c.moveTo(0, 34); c.lineTo(12, 23); c.lineTo(24, 34); c.lineTo(36, 26); c.lineTo(48, 22); c.lineTo(64, 34); c.closePath(); c.fill();
+        // Ground & neon scrolling perspective grid
+        c.fillStyle = "#060814"; c.fillRect(0, 34, 64, 30);
+        c.fillStyle = "#10b981"; c.fillRect(0, 34, 64, 1);
+        for (let i = 0; i < 6; i++) {
+          const gy = 36 + Math.floor(((i * 5 + f * 1.6) % 28));
+          c.fillStyle = gy < 42 ? "#10b981" : "#06b6d4";
+          c.fillRect(0, gy, 64, 1);
+        }
+        c.strokeStyle = "#22d3ee"; c.lineWidth = 1;
+        [-28, -14, 0, 14, 28].forEach((ox) => {
+          c.beginPath(); c.moveTo(32 + ox * 0.35, 34); c.lineTo(32 + ox * 1.4, 64); c.stroke();
+        });
+        // Pink retro car (left lane) with bobbing suspension
+        const bob = f % 2;
+        c.fillStyle = "#ec4899"; c.fillRect(10, 48 + bob, 18, 9); c.fillRect(13, 44 + bob, 12, 5);
+        c.fillStyle = "#f43f5e"; c.fillRect(12, 51 + bob, 4, 2); c.fillRect(22, 51 + bob, 4, 2);
+        c.fillStyle = "#fde047"; c.fillRect(17, 51 + bob, 4, 2);
+        c.fillStyle = "#111827"; c.fillRect(11, 56, 4, 3); c.fillRect(23, 56, 4, 3);
+        // Pixel racer kart (right lane)
+        const kbob = (f + 1) % 2;
+        c.fillStyle = "#f97316"; c.fillRect(40, 43 + kbob, 8, 8);
+        c.fillStyle = "#ef4444"; c.fillRect(38, 50 + kbob, 12, 6);
+        c.fillStyle = "#a855f7"; c.fillRect(36, 54 + kbob, 4, 5); c.fillRect(48, 54 + kbob, 4, 5);
+        c.fillStyle = "#fde047"; c.fillRect(42, 54 + kbob, 4, 2);
+      }))
+    },
+    {
+      em: "💎", label: "Kaleidoscope", delay: 95,
+      gen: () => Array.from({ length: 12 }, (_, f) => {
+        const buf = new Uint8Array(64 * 64 * 3);
+        const pal = [[239,68,68],[249,115,22],[250,204,21],[16,185,129],[6,182,212],[59,130,246],[168,85,247],[236,72,153]];
+        for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+          const d = Math.abs(x - 31.5) + Math.abs(y - 31.5);
+          const ci = (Math.floor(d / 3.5) - f + 96) % pal.length;
+          const i = (y * 64 + x) * 3;
+          buf[i] = pal[ci][0]; buf[i + 1] = pal[ci][1]; buf[i + 2] = pal[ci][2];
+        }
+        return buf;
+      })
+    },
+    {
+      em: "🌈", label: "Plasma Rainbow", delay: 90,
+      gen: () => Array.from({ length: 12 }, (_, f) => {
+        const buf = new Uint8Array(64 * 64 * 3);
+        const t = (f / 12) * Math.PI * 2;
+        for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+          const v = Math.sin(x / 8 + t) + Math.sin(y / 8 - t) + Math.sin((x + y) / 10 + t);
+          const i = (y * 64 + x) * 3;
+          buf[i] = Math.round(127 + 127 * Math.sin(v * 1.4));
+          buf[i + 1] = Math.round(127 + 127 * Math.sin(v * 1.4 + 2.1));
+          buf[i + 2] = Math.round(127 + 127 * Math.sin(v * 1.4 + 4.2));
+        }
+        return buf;
+      })
+    },
+    {
+      em: "🔥", label: "Cozy Campfire", delay: 110,
+      gen: () => Array.from({ length: 10 }, (_, f) => ctxToFrameBuf((c) => {
+        c.fillStyle = "#060814"; c.fillRect(0, 0, 64, 64);
+        [[10,10],[22,6],[46,8],[54,16],[14,22]].forEach(([sx, sy], i) => {
+          c.fillStyle = (f + i) % 2 ? "#e2e8f0" : "#94a3b8"; c.fillRect(sx, sy, 1, 1);
+        });
+        c.fillStyle = "#14532d"; c.fillRect(0, 52, 64, 12);
+        c.fillStyle = "#78350f"; c.fillRect(18, 49, 28, 5); c.fillRect(22, 46, 20, 4);
+        // Animated layered pixel flame
+        const sway = Math.round(Math.sin((f / 10) * Math.PI * 2) * 3);
+        c.fillStyle = "#ef4444"; c.beginPath(); c.moveTo(20, 48); c.quadraticCurveTo(32 + sway, 16, 44, 48); c.fill();
+        c.fillStyle = "#f97316"; c.beginPath(); c.moveTo(24, 48); c.quadraticCurveTo(32 - sway, 24, 40, 48); c.fill();
+        c.fillStyle = "#fde047"; c.beginPath(); c.moveTo(28, 48); c.quadraticCurveTo(32 + sway, 32, 36, 48); c.fill();
+        // Rising embers
+        for (let e = 0; e < 5; e++) {
+          const ey = 42 - ((f * 4 + e * 9) % 34);
+          const ex = 26 + ((e * 7 + f * 2) % 14);
+          c.fillStyle = ey < 20 ? "#f97316" : "#fde047";
+          c.fillRect(ex, ey, 2, 2);
+        }
+      }))
+    },
+    {
+      em: "🌧️", label: "Cyber Rain City", delay: 100,
+      gen: () => Array.from({ length: 10 }, (_, f) => ctxToFrameBuf((c) => {
+        c.fillStyle = "#080618"; c.fillRect(0, 0, 64, 64);
+        // Neon skyline silhouettes
+        const bldgs = [[0,28,12],[13,20,11],[25,32,10],[36,16,13],[50,26,14]];
+        bldgs.forEach(([bx, by, bw], bi) => {
+          c.fillStyle = "#15192e"; c.fillRect(bx, by, bw, 64 - by);
+          for (let wy = by + 4; wy < 60; wy += 5) {
+            for (let wx = bx + 2; wx < bx + bw - 2; wx += 4) {
+              if ((wx + wy + bi) % 3 !== 0) {
+                c.fillStyle = (wx + bi) % 2 ? "#38bdf8" : "#ec4899";
+                c.fillRect(wx, wy, 2, 2);
+              }
+            }
+          }
+        });
+        // Falling cyan neon rain
+        c.fillStyle = "#22d3ee";
+        for (let r = 0; r < 18; r++) {
+          const rx = (r * 11 + 3) % 64;
+          const ry = (r * 17 + f * 6) % 64;
+          c.fillRect(rx, ry, 1, 5);
+        }
+      }))
+    },
+    {
+      em: "🐠", label: "Pixel Aquarium", delay: 120,
+      gen: () => Array.from({ length: 12 }, (_, f) => ctxToFrameBuf((c) => {
+        for (let y = 0; y < 56; y++) {
+          c.fillStyle = `rgb(4,${22 + Math.round(y * 0.8)},${65 + Math.round(y * 1.4)})`;
+          c.fillRect(0, y, 64, 1);
+        }
+        c.fillStyle = "#d97706"; c.fillRect(0, 56, 64, 8);
+        // Swaying seaweed
+        const sw = Math.round(Math.sin((f / 12) * Math.PI * 2) * 2);
+        c.fillStyle = "#10b981";
+        [8, 18, 52].forEach((sx, i) => {
+          for (let y = 38 + i * 3; y < 56; y++) c.fillRect(sx + Math.round(Math.sin(y / 5 + f * 0.5) * 1.5), y, 2, 1);
+        });
+        // Orange tropical fish swimming right
+        const fx = (f * 6) % 72 - 8, fy = 22 + sw;
+        c.fillStyle = "#f97316"; c.fillRect(fx, fy, 10, 6); c.fillRect(fx - 3, fy + 1, 3, 4);
+        c.fillStyle = "#fff"; c.fillRect(fx + 3, fy, 2, 6); c.fillRect(fx + 7, fy + 1, 2, 2);
+        c.fillStyle = "#000"; c.fillRect(fx + 8, fy + 1, 1, 1);
+        // Cyan fish swimming left
+        const fx2 = 64 - ((f * 5 + 20) % 74), fy2 = 38 - sw;
+        c.fillStyle = "#38bdf8"; c.fillRect(fx2, fy2, 9, 5); c.fillRect(fx2 + 9, fy2 + 1, 3, 3);
+        c.fillStyle = "#fde047"; c.fillRect(fx2 + 3, fy2, 2, 5);
+        // Bubbles
+        c.fillStyle = "#bae6fd";
+        for (let b = 0; b < 4; b++) {
+          const by = 52 - ((f * 5 + b * 13) % 48);
+          c.fillRect(14 + b * 13, by, 2, 2);
+        }
+      }))
+    },
+  ];
+
+  function initPixelScenesAndNeon() {
+    const sGrid = $("pixelSceneGrid");
+    if (sGrid) {
+      sGrid.innerHTML = "";
+      PIXEL_SCENES.forEach((sc) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "anim-emoji-btn";
+        b.innerHTML = `<span class="em">${sc.em}</span><span>${sc.label}</span>`;
+        b.onclick = () => loadGeneratedAnimation(sc.gen(), sc.delay, sc.label);
+        sGrid.appendChild(b);
+      });
+    }
+    if ($("btnGenNeonSign")) {
+      $("btnGenNeonSign").onclick = () => {
+        const raw = ($("neonSignText")?.value || "OPEN").trim().toUpperCase();
+        if (!raw) return toast("Type sign text first");
+        const style = $("neonSignStyle")?.value || "red_flash";
+        const words = raw.includes(" ") ? raw.split(/\s+/).slice(0, 2) : (raw.length > 5 ? [raw.slice(0, Math.ceil(raw.length / 2)), raw.slice(Math.ceil(raw.length / 2))] : [raw]);
+        const newFrames = Array.from({ length: 8 }, (_, f) => ctxToFrameBuf((c) => {
+          if (style === "rainbow") {
+            const pal = ["#ef4444","#f97316","#facc15","#10b981","#06b6d4","#3b82f6","#a855f7","#ec4899"];
+            for (let x = 0; x < 64; x += 8) {
+              c.fillStyle = pal[((x / 8) + f) % pal.length];
+              c.fillRect(x, 0, 8, 64);
+            }
+          } else {
+            c.fillStyle = "#050608"; c.fillRect(0, 0, 64, 64);
+          }
+          if (style === "red_flash") {
+            const on = f % 2 === 0;
+            c.strokeStyle = on ? "#ef4444" : "#7f1d1d";
+            c.lineWidth = 3; c.strokeRect(3, 3, 58, 58);
+            for (let i = 4; i < 60; i += 8) {
+              c.fillStyle = ((i / 8 + f) % 2 === 0) ? "#fde047" : "#ef4444";
+              c.fillRect(i, 2, 3, 3); c.fillRect(i, 59, 3, 3);
+            }
+          } else if (style === "starburst") {
+            c.strokeStyle = f % 2 ? "#facc15" : "#f97316";
+            c.lineWidth = 2;
+            for (let a = 0; a < 12; a++) {
+              const ang = (a / 12) * Math.PI * 2 + (f * 0.12);
+              c.beginPath(); c.moveTo(32 + Math.cos(ang) * 16, 32 + Math.sin(ang) * 16);
+              c.lineTo(32 + Math.cos(ang) * 31, 32 + Math.sin(ang) * 31); c.stroke();
+            }
+          } else if (style === "cyber") {
+            c.strokeStyle = f % 2 ? "#22d3ee" : "#ec4899";
+            c.lineWidth = 3; c.strokeRect(4, 4, 56, 56);
+          }
+          c.textAlign = "center"; c.textBaseline = "middle";
+          const fsz = words.length === 1 ? (words[0].length <= 3 ? 26 : 19) : 18;
+          c.font = `900 ${fsz}px -apple-system, sans-serif`;
+          c.fillStyle = style === "rainbow" ? "#050608" : (style === "red_flash" ? (f % 2 ? "#fff" : "#ef4444") : style === "starburst" ? "#fff" : "#38bdf8");
+          if (words.length === 1) {
+            c.fillText(words[0], 32, 33);
+          } else {
+            c.fillText(words[0], 32, 22);
+            c.fillText(words[1], 32, 44);
+          }
+        }));
+        loadGeneratedAnimation(newFrames, 140, `Neon Sign "${raw}"`);
+      };
+    }
+  }
+  initPixelScenesAndNeon();
 
   function downloadB64Gif(b64, name) {
     const blob = new Blob([base64ToBytes(b64)], { type: "image/gif" });

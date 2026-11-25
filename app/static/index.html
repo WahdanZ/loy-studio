@@ -10,7 +10,7 @@
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <title>LOY Studio — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=13" />
+  <link rel="stylesheet" href="/static/style.css?v=14" />
 </head>
 <body>
   <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
@@ -456,11 +456,21 @@
             </div>
 
             <div id="subAnim" class="sub-pane">
-              <div class="card">
-                <h2><svg class="ico"><use href="#i-play"/></svg> Animation Studio</h2>
-                <div class="row">
-                  <label class="muted">Frame Delay (ms)</label>
-                  <input id="gifDelay" type="number" min="40" max="2000" step="20" value="140" style="width:90px;" />
+              <div class="card" style="margin-bottom:14px;">
+                <div class="card-header"><h2><svg class="ico"><use href="#i-play"/></svg> Animation Storyboard</h2><span id="animFrameBadge" class="badge blue">1 frame</span></div>
+                <div id="animStoryboardGrid" class="storyboard-grid"></div>
+                <div class="anim-sliders-box">
+                  <div class="row">
+                    <span class="muted" style="font-size:12px;">Speed</span>
+                    <span id="animSpeedVal" class="muted" style="font-size:12px;font-weight:700;">140 ms</span>
+                  </div>
+                  <input id="animSpeedSlider" type="range" min="40" max="400" step="10" value="140" />
+                  <input id="gifDelay" type="hidden" value="140" />
+                  <div class="row" style="margin-top:4px;">
+                    <span class="muted" style="font-size:12px;">Panel Brightness</span>
+                    <span id="animBriVal" class="muted" style="font-size:12px;font-weight:700;">12 / 15</span>
+                  </div>
+                  <input id="animBriSlider" type="range" min="0" max="15" value="12" />
                 </div>
                 <div class="grid-2">
                   <button id="btnAddFrame" class="btn sm"><svg class="ico sm"><use href="#i-plus"/></svg> Frame</button>
@@ -473,6 +483,26 @@
                   <button id="btnExportGif" class="btn sm">Export .GIF</button>
                 </div>
                 <button id="btnSendGif" class="btn primary full"><svg class="ico sm"><use href="#i-send"/></svg> Send Animation as GIF</button>
+              </div>
+
+              <div class="card" style="margin-bottom:14px;">
+                <div class="card-header"><h2><svg class="ico"><use href="#i-sparkles"/></svg> Animated Pixel Scenes</h2><span class="badge green">1-Tap GIF</span></div>
+                <p class="muted" style="font-size:12px;">Generates looping 64×64 pixel animations into the storyboard so you can preview, edit frames, or send.</p>
+                <div id="pixelSceneGrid" class="anim-emoji-grid"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-header"><h2><svg class="ico"><use href="#i-bolt"/></svg> Animated Neon Sign Builder</h2><span class="badge amber">Custom</span></div>
+                <div class="inline">
+                  <input id="neonSignText" type="text" value="OPEN" placeholder="OPEN, CLOSED, NEW, LIVE..." style="flex:1;" />
+                  <select id="neonSignStyle" style="width:130px;">
+                    <option value="red_flash">Flashing Red</option>
+                    <option value="rainbow">Rainbow Sweep</option>
+                    <option value="starburst">Gold Starburst</option>
+                    <option value="cyber">Cyber Cyan</option>
+                  </select>
+                </div>
+                <button id="btnGenNeonSign" class="btn primary full">Generate Animated Sign</button>
               </div>
             </div>
 
@@ -881,6 +911,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=13"></script>
+  <script src="/static/app.js?v=14"></script>
 </body>
 </html>

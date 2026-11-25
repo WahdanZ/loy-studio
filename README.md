@@ -4,7 +4,13 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 
 ---
 
-## Screenshots
+## The `64×64` LED Pixel Display
+
+| `64×64` (`4,096` Pixel Points · `260×260×17mm`) | Desk Animation Showcase |
+| :---: | :---: |
+| <img src="docs/screenshots/display_hardware.jpg" width="380" alt="64x64 LED Pixel Display Hardware" /> | <img src="docs/screenshots/display_desk_showcase.jpg" width="380" alt="64x64 LED Pixel Display on Desk" /> |
+
+## App Screenshots
 
 ### Desktop Studio
 | Home Dashboard & Instant Desk Modes | 15 Live Autonomous Hardware Clocks |
@@ -37,7 +43,7 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
   - Responsive `64×64` LED simulator canvas with **Full Draw** edge-to-edge fullscreen mode and an inline quick color strip.
   - **Multi-touch support**: draw with multiple fingers simultaneously, **2-finger pinch-to-resize & pan** on floating text/emojis, and **Procreate-style 2-finger tap to Undo**.
   - **Movable Text & Animated Emojis**: drag & drop custom text or 20 emojis anywhere on the canvas, apply live motion effects (`Pulse`, `Bounce`, `Wiggle`, `Float`, `Spin`, `Sparkle`), or pick from 8 one-tap **Animated Emoji GIFs** + 6 editable **Pixel Art Templates**.
-  - Full frame-by-frame **Animation Studio** (onion skinning, mirror symmetry, ping-pong, GIF export) and **Photo / Video-to-LED** converter.
+  - **Visual Animation Storyboard & 1-Tap Pixel Scenes**: 4-column visual frame grid with live **Speed + Brightness** sliders, 6 one-tap looping `64×64` scenes (**Synthwave Highway**, **Kaleidoscope**, **Plasma Rainbow**, **Cozy Campfire**, **Cyber Rain City**, **Pixel Aquarium**), an **Animated Neon Sign Builder** (`OPEN`, `CLOSED`, `NEW`, `LIVE`, custom text), onion skinning, mirror symmetry, GIF export, and **Photo / Video-to-LED** converter.
 - **15 Autonomous Hardware RTC Clocks**:
   - Synthwave Sunset, Neon Ring, Sci-Fi HUD, Hacker Terminal, Retro Handheld, Starlight Night, Arcade Board, Heartbeat EKG, Gradient Pill, Flip Cards, Cyber Frame, Giant Stacked, HH:MM + Sec, Date + Time, and Minimal Big.
   - Combine any clock with an animated GIF **behind the clock** or **masked inside the digits**.
