@@ -4,6 +4,12 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 
 ---
 
+## Live `64×64` Display in Action
+
+<p align="center">
+  <img src="docs/screenshots/display_live.jpg" width="420" alt="LOY Studio running live Weather + RTC Clock on 64x64 LED Display" />
+</p>
+
 ## App Screenshots
 
 ### Desktop Studio
