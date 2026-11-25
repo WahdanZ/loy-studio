@@ -135,7 +135,13 @@
       document.querySelectorAll(".pill[data-sub]").forEach((x) => x.classList.remove("active"));
       document.querySelectorAll(".sub-pane").forEach((x) => x.classList.remove("active"));
       p.classList.add("active");
-      $(p.dataset.sub).classList.add("active");
+      const target = $(p.dataset.sub);
+      if (target) {
+        target.classList.add("active");
+        if (window.innerWidth <= 780 && p.dataset.sub !== "subPixel") {
+          setTimeout(() => target.scrollIntoView({ behavior: "smooth", block: "start" }), 40);
+        }
+      }
     };
   });
 

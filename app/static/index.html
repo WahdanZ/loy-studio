@@ -10,7 +10,7 @@
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <title>LOY Studio — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=10" />
+  <link rel="stylesheet" href="/static/style.css?v=11" />
 </head>
 <body>
   <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
@@ -330,22 +330,23 @@
         <div class="studio-layout">
           <!-- Centerpiece Touch Canvas -->
           <div id="canvasCard" class="canvas-card">
-            <div class="scroll-strip no-scrollbar" style="width:100%;justify-content:space-between;">
-              <div class="scroll-strip no-scrollbar">
-                <button class="btn sm active" data-tool="pen">Pen</button>
-                <button class="btn sm" data-tool="eraser">Erase</button>
-                <button class="btn sm" data-tool="line">Line</button>
-                <button class="btn sm" data-tool="rect">Rect</button>
-                <button class="btn sm" data-tool="circle">Circle</button>
-                <button class="btn sm" data-tool="fill">Fill</button>
-                <button class="btn sm" data-tool="picker">Pick</button>
-              </div>
-              <div class="inline" style="flex-wrap:nowrap;">
+            <div class="canvas-actions-bar">
+              <div class="inline" style="flex-wrap:nowrap;gap:6px;">
                 <button id="btnUndo" class="btn sm icon-btn" title="Undo"><svg class="ico sm"><use href="#i-undo"/></svg></button>
                 <button id="btnRedo" class="btn sm icon-btn" title="Redo"><svg class="ico sm"><use href="#i-redo"/></svg></button>
                 <button id="btnClear" class="btn sm icon-btn" title="Clear"><svg class="ico sm"><use href="#i-trash"/></svg></button>
-                <button id="btnFullscreen" class="btn sm primary" title="Fullscreen Draw"><svg class="ico sm"><use href="#i-maximize"/></svg> <span id="fsBtnLabel">Full Draw</span></button>
               </div>
+              <button id="btnFullscreen" class="btn sm primary" title="Fullscreen Draw"><svg class="ico sm"><use href="#i-maximize"/></svg> <span id="fsBtnLabel">Full Draw</span></button>
+            </div>
+
+            <div class="scroll-strip no-scrollbar" style="width:100%;">
+              <button class="btn sm active" data-tool="pen">Pen</button>
+              <button class="btn sm" data-tool="eraser">Erase</button>
+              <button class="btn sm" data-tool="line">Line</button>
+              <button class="btn sm" data-tool="rect">Rect</button>
+              <button class="btn sm" data-tool="circle">Circle</button>
+              <button class="btn sm" data-tool="fill">Fill</button>
+              <button class="btn sm" data-tool="picker">Pick</button>
             </div>
 
             <div class="canvas-viewport">
@@ -850,6 +851,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=10"></script>
+  <script src="/static/app.js?v=11"></script>
 </body>
 </html>
