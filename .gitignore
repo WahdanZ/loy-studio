@@ -17,4 +17,8 @@ matter/node_modules/
 matter/.matter-storage/
 matter/.matter.pid
 matter/matter.log
+build/
+dist/
+*.spec
+LOY-Studio-Data/
 .DS_Store

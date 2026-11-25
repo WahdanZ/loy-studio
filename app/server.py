@@ -91,14 +91,38 @@ from app.smart_features import (
     render_weather_clock_bg_gif,
 )
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
-GIFS_DIR = PROJECT_ROOT / "gifs"
-LIBRARY_FILE = Path(__file__).resolve().parent / "local_library.json"
-TOKEN_FILE = Path(__file__).resolve().parent / ".pairing_token"
-LAST_DEVICE_FILE = Path(__file__).resolve().parent / ".last_device.json"
-SCHEDULE_FILE = Path(__file__).resolve().parent / "work_schedule.json"
-SMART_CONFIG_FILE = Path(__file__).resolve().parent / "smart_config.json"
-LAN_AUTH_FILE = Path(__file__).resolve().parent / ".lan_auth.json"
+BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))
+STATIC_DIR = BUNDLE_ROOT / "app" / "static"
+GIFS_DIR = BUNDLE_ROOT / "gifs"
+
+
+def _resolve_data_dir() -> Path:
+    """Use a portable data folder next to the executable when bundled, or `app/` in dev."""
+    if getattr(sys, "frozen", False):
+        exe_path = Path(sys.executable).resolve()
+        # On macOS .app bundles, store portable data next to the .app folder if writable
+        base = exe_path.parents[3] if ".app" in exe_path.parts else exe_path.parent
+        candidate = base / "LOY-Studio-Data"
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            test_file = candidate / ".write_test"
+            test_file.write_text("ok", encoding="utf-8")
+            test_file.unlink(missing_ok=True)
+            return candidate
+        except OSError:
+            fallback = Path.home() / ".loy-studio"
+            fallback.mkdir(parents=True, exist_ok=True)
+            return fallback
+    return Path(__file__).resolve().parent
+
+
+DATA_DIR = _resolve_data_dir()
+LIBRARY_FILE = DATA_DIR / "local_library.json"
+TOKEN_FILE = DATA_DIR / ".pairing_token"
+LAST_DEVICE_FILE = DATA_DIR / ".last_device.json"
+SCHEDULE_FILE = DATA_DIR / "work_schedule.json"
+SMART_CONFIG_FILE = DATA_DIR / "smart_config.json"
+LAN_AUTH_FILE = DATA_DIR / ".lan_auth.json"
 
 
 def _hash_password(password: str, salt: str) -> str:

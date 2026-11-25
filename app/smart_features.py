@@ -13,11 +13,13 @@ LOY Studio 2.0 — Smart Desk Features, Mac Context Awareness, Webhook Alerts & 
 
 from __future__ import annotations
 
+import datetime
 import io
 import json
 import math
 import re
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -197,7 +199,42 @@ def get_upcoming_calendar_event(within_minutes: int = 15) -> Optional[Dict[str, 
     return event
 
 
+def _get_windows_context() -> Tuple[str, int]:
+    """Return (foreground_window_title, idle_seconds) on Windows via Win32 ctypes."""
+    try:
+        import ctypes
+
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        lii = LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        idle_s = 0
+        if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+            ms = ctypes.windll.kernel32.GetTickCount() - lii.dwTime
+            idle_s = max(0, int(ms / 1000))
+
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        buf = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetWindowTextW(hwnd, buf, 256)
+        return buf.value.strip(), idle_s
+    except Exception:
+        return "", 0
+
+
 def detect_mac_context(*, check_calendar: bool = False) -> Dict[str, Any]:
+    if sys.platform == "win32":
+        front_app, idle_s = _get_windows_context()
+        front_lower = front_app.lower()
+        in_call = any(k in front_lower for k in ("zoom", "teams", "meet", "webex", "slack huddle"))
+        is_coding = any(k in front_lower for k in CODING_APPS)
+        return {
+            "front_app": front_app,
+            "in_call": in_call,
+            "is_coding": is_coding,
+            "idle_seconds": idle_s,
+            "next_event": None,
+        }
     front_app = get_macos_frontmost_app()
     front_lower = front_app.lower()
     in_call = get_macos_camera_or_call_active() or (front_lower in MEETING_APPS)
