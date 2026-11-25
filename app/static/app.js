@@ -70,20 +70,35 @@
   }
 
   // ---------------- Navigation ----------------
-  const wsTitles = { wsHome: "Home", wsCreate: "Create Studio", wsExplore: "Explore", wsLibrary: "Library", wsLive: "Live Widgets", wsSchedule: "Auto Schedule", wsDevice: "Device & Diagnostics" };
+  const wsTitles = { wsHome: "Home", wsCreate: "Create Studio", wsExplore: "Explore & Library", wsLive: "Smart & Live", wsSchedule: "Auto Schedule", wsDevice: "Device & Pairing" };
   function switchWorkspace(wsId) {
+    if (wsId === "wsLibrary") {
+      wsId = "wsExplore";
+      document.querySelector('[data-exp="expLibrary"]')?.click();
+    }
     document.querySelectorAll(".workspace").forEach((el) => el.classList.toggle("active", el.id === wsId));
     document.querySelectorAll("[data-ws]").forEach((el) => el.classList.toggle("active", el.dataset.ws === wsId));
     $("wsTitle").textContent = wsTitles[wsId] || "LOY Studio";
-    if (wsId === "wsExplore") loadExploreGifs();
-    if (wsId === "wsLibrary") loadLibrary();
+    if (wsId === "wsExplore") { loadExploreGifs(); loadLibrary(); }
     if (wsId === "wsLive") refreshSystemStats();
     if (wsId === "wsSchedule") loadWorkSchedule();
     if (wsId === "wsDevice") { refreshDiagnostics(); loadPhoneConnect(); }
     if (wsId === "wsHome") { renderHomePreview(); loadLibrary(); }
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
   document.querySelectorAll("[data-ws]").forEach((b) => (b.onclick = () => switchWorkspace(b.dataset.ws)));
   document.querySelectorAll("[data-jump]").forEach((b) => (b.onclick = () => switchWorkspace(b.dataset.jump)));
+
+  // Explore 3-way segmented tabs (Live Clocks | 18 GIFs | My Library)
+  document.querySelectorAll(".seg-btn[data-exp]").forEach((btn) => {
+    btn.onclick = () => {
+      document.querySelectorAll(".seg-btn[data-exp]").forEach((x) => x.classList.remove("active"));
+      document.querySelectorAll(".exp-pane").forEach((x) => x.classList.remove("active"));
+      btn.classList.add("active");
+      const pane = $(btn.dataset.exp);
+      if (pane) pane.classList.add("active");
+    };
+  });
 
   document.querySelectorAll(".pill[data-sub]").forEach((p) => {
     p.onclick = () => {
@@ -485,6 +500,7 @@
   }
   $("btnSendGif").onclick = () => sendCanvasToDisplay(true);
   $("btnTopSend").onclick = () => sendCanvasToDisplay(frames.length > 1);
+  if ($("btnMobCanvasSend")) $("btnMobCanvasSend").onclick = () => sendCanvasToDisplay(frames.length > 1);
 
   // ---------------- Transfer Progress ----------------
   function startTransferPoll() {
@@ -509,13 +525,15 @@
   // ---------------- Connection & Device ----------------
   function applyStatus(st) {
     connected = st.connected;
-    const label = st.connected ? `${st.device_name || st.address} (${st.width}×${st.height})` : "Disconnected";
+    const shortName = st.connected ? (st.device_name || st.address || "Connected") : "Connect";
+    const label = st.connected ? `${shortName} (${st.width}×${st.height})` : "Disconnected";
     $("sideConnDot").className = "conn-dot" + (st.connected ? " online" : "");
     $("sideConnLabel").textContent = label;
-    $("topConnBadge").textContent = label;
-    $("topConnBadge").className = "badge" + (st.connected ? " green" : "");
-    $("homeDevName").textContent = st.connected ? (st.device_name || st.address) : "No Display Connected";
-    $("homeDevMeta").textContent = st.connected ? `${st.width}×${st.height} · Mode: ${st.mode.toUpperCase()} · Brightness ${st.brightness}/15` : "Bluetooth 64×64 LED Matrix · 100% Local & Private";
+    $("topConnBadge").className = "conn-pill" + (st.connected ? " online" : "");
+    if ($("topConnDot")) $("topConnDot").className = "conn-dot" + (st.connected ? " online" : "");
+    if ($("topConnText")) $("topConnText").textContent = st.connected ? `${shortName} · ${st.brightness}` : "Connect";
+    $("homeDevName").textContent = st.connected ? shortName : "No Display Connected";
+    $("homeDevMeta").textContent = st.connected ? `${st.width}×${st.height} · ${st.mode.toUpperCase()} · Brightness ${st.brightness}/15` : "Tap top pill to connect Bluetooth";
     $("homeBriSlider").value = st.brightness;
     $("homeBriVal").textContent = st.brightness;
     $("btnDevDisconnect").classList.toggle("hidden", !st.connected);
@@ -726,6 +744,11 @@
         ? workSchedule.matched_rule.name
         : (workSchedule.enabled ? "Schedule Idle" : "Schedule Paused");
     }
+    if ($("homeSchedLink")) {
+      $("homeSchedLink").textContent = workSchedule.enabled && workSchedule.matched_rule
+        ? `Auto: ${workSchedule.matched_rule.name}`
+        : "Auto Schedule";
+    }
     renderTimeline();
 
     list.innerHTML = "";
@@ -733,38 +756,49 @@
       const isLive = rule.id === matchedId;
       const col = SCHED_COLORS[idx % SCHED_COLORS.length];
       const card = document.createElement("div");
-      card.style.cssText = `padding:12px;border-radius:10px;border:1px solid ${isLive ? "var(--accent)" : "var(--border-strong)"};background:var(--surface-elev);display:flex;flex-direction:column;gap:10px;opacity:${rule.enabled ? 1 : 0.55};`;
+      card.className = `sched-card${isLive ? " live" : ""}${rule.enabled ? "" : " disabled"}`;
 
       const thumbHtml = rule.kind === "gif" && rule.target
-        ? `<img src="/gifs/${rule.target}" alt="" style="width:42px;height:42px;border-radius:6px;image-rendering:pixelated;border:1px solid var(--border);background:#000;flex-shrink:0;" />`
+        ? `<img src="/gifs/${rule.target}" alt="" style="width:44px;height:44px;border-radius:9px;image-rendering:pixelated;border:1px solid var(--border);background:#000;flex-shrink:0;" />`
         : rule.kind === "hw_clock" && rule.target
-          ? `<img src="/api/hw_clock_preview/${rule.target}" alt="" style="width:42px;height:42px;border-radius:6px;image-rendering:pixelated;border:1px solid var(--border);background:#000;flex-shrink:0;" />`
-          : `<div style="width:42px;height:42px;border-radius:6px;border:1px solid var(--border);background:#000;display:grid;place-items:center;color:var(--danger);flex-shrink:0;"><svg class="ico"><use href="#i-power"/></svg></div>`;
+          ? `<img src="/api/hw_clock_preview/${rule.target}" alt="" style="width:44px;height:44px;border-radius:9px;image-rendering:pixelated;border:1px solid var(--border);background:#000;flex-shrink:0;" />`
+          : `<div style="width:44px;height:44px;border-radius:9px;border:1px solid var(--border);background:#000;display:grid;place-items:center;color:var(--danger);flex-shrink:0;"><svg class="ico"><use href="#i-power"/></svg></div>`;
 
       const dayChipsHtml = SCHED_DAYS.map(([dk, lbl]) => {
         const on = (rule.days || []).includes(dk);
-        return `<button type="button" data-day="${dk}" style="width:26px;height:26px;border-radius:6px;border:1px solid ${on ? col : "var(--border)"};background:${on ? col : "transparent"};color:${on ? "#fff" : "var(--text-muted)"};font-size:11px;font-weight:700;cursor:pointer;">${lbl}</button>`;
+        return `<button type="button" class="sched-day-btn" data-day="${dk}" style="${on ? `background:${col};border-color:${col};color:#fff;` : ""}">${lbl}</button>`;
       }).join("");
 
       card.innerHTML = `
-        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center;">
-          ${thumbHtml}
-          <input type="checkbox" data-field="enabled" ${rule.enabled ? "checked" : ""} title="Enable / disable rule" />
-          <input type="text" data-field="name" value="${(rule.name || "").replace(/"/g, "&quot;")}" style="width:165px;font-weight:600;" />
-          <div class="inline" style="gap:4px;">${dayChipsHtml}</div>
-          <div class="inline" style="gap:4px;">
-            <input type="time" data-field="start" value="${rule.start || "09:00"}" style="width:94px;" />
-            <span class="muted">→</span>
-            <input type="time" data-field="end" value="${rule.end || "17:00"}" style="width:94px;" />
+        <div class="sched-top">
+          <div class="inline" style="gap:10px;flex:1;min-width:0;flex-wrap:nowrap;">
+            ${thumbHtml}
+            <div style="flex:1;min-width:0;">
+              <input type="text" data-field="name" value="${(rule.name || "").replace(/"/g, "&quot;")}" style="width:100%;font-weight:700;padding:6px 9px;" />
+            </div>
           </div>
-          <select data-field="target" style="flex:1;min-width:175px;">${buildTargetOptions(rule.kind, rule.target)}</select>
-          <label class="inline muted" style="gap:5px;font-size:12px;" title="Brightness (1-15)"><svg class="ico sm"><use href="#i-sun"/></svg><input type="number" data-field="brightness" min="1" max="15" value="${rule.brightness ?? 12}" style="width:48px;" /></label>
-          <div class="inline" style="gap:4px;">
-            <button class="btn sm primary" data-act="test" title="Send this mode to display now"><svg class="ico sm"><use href="#i-play"/></svg> Test</button>
-            <button class="btn sm icon-btn" data-act="up" ${idx === 0 ? "disabled" : ""} title="Move priority up"><svg class="ico sm"><use href="#i-up"/></svg></button>
-            <button class="btn sm icon-btn" data-act="down" ${idx === workSchedule.rules.length - 1 ? "disabled" : ""} title="Move priority down"><svg class="ico sm"><use href="#i-down"/></svg></button>
-            <button class="btn sm icon-btn" data-act="dup" title="Duplicate rule"><svg class="ico sm"><use href="#i-copy"/></svg></button>
-            <button class="btn sm danger icon-btn" data-act="del" title="Delete rule"><svg class="ico sm"><use href="#i-trash"/></svg></button>
+          <input type="checkbox" data-field="enabled" ${rule.enabled ? "checked" : ""} title="Enable / disable rule" />
+        </div>
+        <div class="sched-days-grid">${dayChipsHtml}</div>
+        <div class="sched-controls-grid">
+          <div class="inline" style="gap:5px;flex-wrap:nowrap;">
+            <input type="time" data-field="start" value="${rule.start || "09:00"}" style="flex:1;" />
+            <span class="muted">→</span>
+            <input type="time" data-field="end" value="${rule.end || "17:00"}" style="flex:1;" />
+          </div>
+          <select data-field="target" style="width:100%;">${buildTargetOptions(rule.kind, rule.target)}</select>
+          <label class="inline muted" style="gap:5px;justify-content:flex-end;" title="Brightness (1-15)">
+            <svg class="ico sm"><use href="#i-sun"/></svg>
+            <input type="number" data-field="brightness" min="1" max="15" value="${rule.brightness ?? 12}" style="width:54px;" />
+          </label>
+        </div>
+        <div class="sched-footer">
+          <button class="btn sm primary" data-act="test"><svg class="ico sm"><use href="#i-play"/></svg> Test on Panel</button>
+          <div class="inline" style="gap:5px;flex-wrap:nowrap;">
+            <button class="btn sm icon-btn" data-act="up" ${idx === 0 ? "disabled" : ""} title="Priority Up"><svg class="ico sm"><use href="#i-up"/></svg></button>
+            <button class="btn sm icon-btn" data-act="down" ${idx === workSchedule.rules.length - 1 ? "disabled" : ""} title="Priority Down"><svg class="ico sm"><use href="#i-down"/></svg></button>
+            <button class="btn sm icon-btn" data-act="dup" title="Duplicate"><svg class="ico sm"><use href="#i-copy"/></svg></button>
+            <button class="btn sm danger icon-btn" data-act="del" title="Delete"><svg class="ico sm"><use href="#i-trash"/></svg></button>
           </div>
         </div>
       `;
@@ -1026,19 +1060,20 @@
     const acc = encodeURIComponent($("hwClkAccent").value);
     grid.innerHTML = "";
     HW_CLOCK_CATALOG.forEach(([id, label]) => {
-      const card = document.createElement("button");
-      card.type = "button";
+      const card = document.createElement("div");
       const active = id === selected;
-      card.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:5px;padding:6px;border-radius:10px;border:1px solid ${active ? "var(--accent)" : "var(--border)"};background:${active ? "rgba(59,130,246,0.16)" : "var(--surface-elev)"};color:var(--text);cursor:pointer;text-align:center;`;
+      card.className = `clock-card${active ? " active" : ""}`;
       card.innerHTML = `
-        <img src="/api/hw_clock_preview/${id}?color=${fg}&accent=${acc}" alt="${label}" style="width:68px;height:68px;image-rendering:pixelated;border-radius:6px;background:#000;border:1px solid rgba(255,255,255,0.08);" />
-        <span style="font-size:11px;font-weight:600;line-height:1.15;">${label}</span>
+        <img src="/api/hw_clock_preview/${id}?color=${fg}&accent=${acc}" alt="${label}" />
+        <div class="clock-card-title">${label}</div>
+        <button type="button" class="btn sm ${active ? "primary" : ""} full" data-send-clk="${id}">Send</button>
       `;
-      card.onclick = () => {
+      card.onclick = (e) => {
+        if (e.target.closest("[data-send-clk]")) return;
         $("hwClkShape").value = id;
         renderHwClockGallery();
       };
-      card.ondblclick = () => {
+      card.querySelector("[data-send-clk]").onclick = () => {
         $("hwClkShape").value = id;
         renderHwClockGallery();
         $("btnHwClkSend").click();
@@ -1394,6 +1429,7 @@
     { label: "Gaming", kind: "gif", target: "15_mode_gaming_chill.gif", img: "/gifs/15_mode_gaming_chill.gif" },
     { label: "Synthwave Clock", kind: "clock", target: "hw_synthwave_sun", img: "/api/hw_clock_preview/hw_synthwave_sun" },
     { label: "Hacker Clock", kind: "clock", target: "hw_matrix_terminal", img: "/api/hw_clock_preview/hw_matrix_terminal" },
+    { label: "Starlight", kind: "clock", target: "hw_galaxy_stars", img: "/api/hw_clock_preview/hw_galaxy_stars" },
   ];
   function renderQuickModes() {
     const grid = $("homeQuickModes");

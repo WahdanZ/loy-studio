@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#090a0f" />
+  <meta name="theme-color" content="#08090d" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="LOY Studio" />
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
-  <title>LOY Studio 2.0 — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=7" />
+  <title>LOY Studio — Privacy-First Pixel Display Studio</title>
+  <link rel="stylesheet" href="/static/style.css?v=8" />
 </head>
 <body>
-  <!-- Inline Crisp Vector SVG Sprite (100% Offline, Zero External Fonts) -->
+  <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
   <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
     <symbol id="i-logo" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><circle cx="17.5" cy="17.5" r="3.5"/></symbol>
     <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5.5v-6h-5v6H4a1 1 0 0 1-1-1z"/></symbol>
@@ -56,22 +56,21 @@
         <div class="brand-mark"><svg class="ico"><use href="#i-logo"/></svg></div>
         <div>
           <div class="brand-title">LOY Studio</div>
-          <div class="brand-sub">v2.0 · Offline BLE</div>
+          <div class="brand-sub">v3.0 · Offline BLE</div>
         </div>
       </div>
 
       <nav class="nav-list">
         <button class="nav-item active" data-ws="wsHome"><svg class="ico"><use href="#i-home"/></svg> Home</button>
-        <button class="nav-item" data-ws="wsCreate"><svg class="ico"><use href="#i-brush"/></svg> Create</button>
-        <button class="nav-item" data-ws="wsExplore"><svg class="ico"><use href="#i-sparkles"/></svg> Explore</button>
-        <button class="nav-item" data-ws="wsLibrary"><svg class="ico"><use href="#i-grid"/></svg> Library</button>
-        <button class="nav-item" data-ws="wsLive"><svg class="ico"><use href="#i-activity"/></svg> Live</button>
-        <button class="nav-item" data-ws="wsSchedule"><svg class="ico"><use href="#i-clock"/></svg> Schedule</button>
-        <button class="nav-item" data-ws="wsDevice"><svg class="ico"><use href="#i-sliders"/></svg> Device</button>
+        <button class="nav-item" data-ws="wsExplore"><svg class="ico"><use href="#i-sparkles"/></svg> Explore &amp; Library</button>
+        <button class="nav-item" data-ws="wsCreate"><svg class="ico"><use href="#i-brush"/></svg> Create Studio</button>
+        <button class="nav-item" data-ws="wsSchedule"><svg class="ico"><use href="#i-clock"/></svg> Auto Schedule</button>
+        <button class="nav-item" data-ws="wsLive"><svg class="ico"><use href="#i-zap"/></svg> Smart &amp; Live</button>
+        <button class="nav-item" data-ws="wsDevice"><svg class="ico"><use href="#i-sliders"/></svg> Device &amp; Pairing</button>
       </nav>
 
       <div class="sidebar-footer">
-        <div style="font-size:12px;font-weight:600;display:flex;align-items:center;">
+        <div style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;">
           <span id="sideConnDot" class="conn-dot"></span>
           <span id="sideConnLabel">Disconnected</span>
         </div>
@@ -84,16 +83,22 @@
 
     <!-- Main Area -->
     <div class="main-area">
+      <!-- Sleek Single-Line Glass Topbar (Never wraps on mobile!) -->
       <header class="topbar">
         <div class="topbar-title">
+          <div class="brand-mark mob-only"><svg class="ico sm"><use href="#i-logo"/></svg></div>
           <span id="wsTitle">Home</span>
         </div>
         <div class="topbar-actions">
-          <span id="topSchedBadge" class="badge clickable" data-jump="wsSchedule" title="Click to manage Auto Schedule">
+          <span id="topSchedBadge" class="badge clickable desk-only" data-jump="wsSchedule" title="Manage Auto Schedule">
             <svg class="ico sm"><use href="#i-clock"/></svg> <span id="topSchedText">Schedule Active</span>
           </span>
-          <span id="topConnBadge" class="badge">Disconnected</span>
-          <button id="btnTopSend" class="btn primary"><svg class="ico sm"><use href="#i-send"/></svg> Send Canvas</button>
+          <!-- Tappable Device Status Pill -> Opens Device & Pairing from any screen! -->
+          <button id="topConnBadge" type="button" class="conn-pill" data-jump="wsDevice" title="Tap for Bluetooth & Phone QR Pairing">
+            <span id="topConnDot" class="conn-dot"></span>
+            <span id="topConnText">Connect</span>
+          </button>
+          <button id="btnTopSend" class="btn sm primary desk-only"><svg class="ico sm"><use href="#i-send"/></svg> Send Canvas</button>
         </div>
       </header>
 
@@ -112,30 +117,31 @@
 
       <!-- ==================== HOME ==================== -->
       <section id="wsHome" class="workspace active">
-        <div class="card" style="margin-bottom:16px;">
+        <div class="card" style="margin-bottom:14px;">
           <div class="home-hero">
             <div class="led-bezel">
               <canvas id="homePreview" width="64" height="64"></canvas>
             </div>
-            <div style="display:flex;flex-direction:column;gap:15px;">
-              <div class="row">
-                <div>
-                  <h2 id="homeDevName" style="font-size:18px;">No Display Connected</h2>
-                  <p class="muted" id="homeDevMeta">Bluetooth 64×64 LED Matrix · 100% Local &amp; Private</p>
+            <div style="display:flex;flex-direction:column;gap:11px;min-width:0;">
+              <div class="row" style="flex-wrap:nowrap;">
+                <div style="min-width:0;">
+                  <h2 id="homeDevName" style="font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">No Display Connected</h2>
+                  <p class="muted" id="homeDevMeta" style="font-size:11.5px;">Tap top pill to connect BLE</p>
                 </div>
-                <div class="inline">
-                  <button id="btnHomePowerOn" class="btn sm"><svg class="ico sm"><use href="#i-power"/></svg> On</button>
-                  <button id="btnHomePowerOff" class="btn sm">Off</button>
+                <div class="inline" style="flex-wrap:nowrap;gap:5px;">
+                  <button id="btnHomePowerOn" class="btn sm" title="Power On"><svg class="ico sm"><use href="#i-power"/></svg></button>
+                  <button id="btnHomePowerOff" class="btn sm" title="Power Off">Off</button>
                 </div>
               </div>
-              <div class="row">
-                <label class="inline" style="font-weight:550;gap:6px;"><svg class="ico sm"><use href="#i-sun"/></svg> Brightness <span id="homeBriVal">12</span>/15</label>
-                <input id="homeBriSlider" type="range" min="1" max="15" value="12" style="flex:1;max-width:360px;" />
+              <div style="display:flex;flex-direction:column;gap:5px;">
+                <div class="row" style="font-size:12px;">
+                  <span class="inline muted" style="gap:5px;"><svg class="ico sm"><use href="#i-sun"/></svg> Brightness</span>
+                  <strong style="font-family:var(--font-mono);"><span id="homeBriVal">12</span> / 15</strong>
+                </div>
+                <input id="homeBriSlider" type="range" min="1" max="15" value="12" style="width:100%;" />
               </div>
-              <div class="inline">
-                <button class="btn sm primary" data-jump="wsCreate"><svg class="ico sm"><use href="#i-brush"/></svg> Pixel Editor</button>
-                <button class="btn sm" data-jump="wsExplore"><svg class="ico sm"><use href="#i-sparkles"/></svg> Clocks &amp; GIFs</button>
-                <button class="btn sm" data-jump="wsSchedule"><svg class="ico sm"><use href="#i-clock"/></svg> Schedule</button>
+              <div class="scroll-strip no-scrollbar">
+                <button class="btn sm" data-jump="wsSchedule"><svg class="ico sm"><use href="#i-clock"/></svg> <span id="homeSchedLink">Auto Schedule</span></button>
                 <button id="btnHomeSyncTime" class="btn sm"><svg class="ico sm"><use href="#i-refresh"/></svg> Sync RTC</button>
                 <button id="btnHomeExitMode" class="btn sm">Exit Modal</button>
               </div>
@@ -143,18 +149,18 @@
           </div>
         </div>
 
-        <!-- Instant 1-Click Desk Modes Strip -->
-        <div class="card" style="margin-bottom:16px;">
+        <!-- Instant 1-Tap Desk Modes Grid (Above the fold on mobile!) -->
+        <div class="card" style="margin-bottom:14px;">
           <div class="card-header">
-            <h2><svg class="ico"><use href="#i-zap"/></svg> Quick Desk Modes</h2>
-            <span class="badge blue">1-Click Switch</span>
+            <h2><svg class="ico"><use href="#i-zap"/></svg> Instant Desk Modes</h2>
+            <span class="badge blue">1-Tap Switch</span>
           </div>
           <div id="homeQuickModes" class="quick-modes-grid"></div>
         </div>
 
         <div class="grid-2">
           <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-sparkles"/></svg> Favorites</h2><span class="badge">Local</span></div>
+            <div class="card-header"><h2><svg class="ico"><use href="#i-sparkles"/></svg> Favorites</h2><span class="badge">Pinned</span></div>
             <div id="homeFavorites" class="grid-auto"><p class="muted">Star creations in Library to pin them here.</p></div>
           </div>
           <div class="card">
@@ -164,33 +170,179 @@
         </div>
       </section>
 
-      <!-- ==================== CREATE ==================== -->
+      <!-- ==================== EXPLORE & LIBRARY ==================== -->
+      <section id="wsExplore" class="workspace">
+        <!-- Clean 3-Way Segmented Switcher (Merges Clocks, GIFs & Library cleanly on Mobile & Desktop!) -->
+        <div class="seg-bar">
+          <button class="seg-btn active" data-exp="expClocks">Live Clocks (15)</button>
+          <button class="seg-btn" data-exp="expGifs">18 GIFs &amp; Games</button>
+          <button class="seg-btn" data-exp="expLibrary">My Library</button>
+        </div>
+
+        <!-- Pane 1: Live Hardware RTC Clocks -->
+        <div id="expClocks" class="exp-pane active">
+          <div class="card" style="margin-bottom:14px;">
+            <div class="card-header">
+              <h2><svg class="ico"><use href="#i-clock"/></svg> Autonomous RTC Clocks</h2>
+              <span class="badge green">Ticks Offline</span>
+            </div>
+            <p class="muted">Tap any clock to customize colors/GIF layers below, or tap <strong>Send</strong> on any card:</p>
+            <div id="hwClockGallery" class="clock-grid"></div>
+
+            <div style="padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:10px;">
+              <select id="hwClkShape" class="hidden">
+                <option value="hw_synthwave_sun">Synthwave Sunset + Grid</option>
+                <option value="hw_neon_ring">Neon Ring</option>
+                <option value="hw_pipboy_hud">Sci-Fi Cockpit HUD</option>
+                <option value="hw_matrix_terminal">Hacker Terminal</option>
+                <option value="hw_gameboy_retro">Retro Handheld LCD</option>
+                <option value="hw_galaxy_stars">Starlight Moon Night</option>
+                <option value="hw_arcade_cabinet">Arcade Scoreboard</option>
+                <option value="hw_heart_bezel">Neon Heartbeat EKG</option>
+                <option value="hw_gradient_pill">Neon Gradient Pill</option>
+                <option value="hw_flip_cards">Flip Cards</option>
+                <option value="hw_cyber_frame">Cyber Frame</option>
+                <option value="hw_stacked">Giant Stacked</option>
+                <option value="hw_seconds">HH:MM + Seconds</option>
+                <option value="hw_date_time">Date + HH:MM:SS</option>
+                <option value="hw_minimal">Minimal HH:MM</option>
+              </select>
+              <div class="grid-2" style="gap:8px;">
+                <select id="hwClkBgGif" title="Optional animated GIF behind or inside clock digits">
+                  <option value="">Static Clock Artwork (Default)</option>
+                  <option value="03_matrix_rain.gif">GIF · Matrix Rain</option>
+                  <option value="04_retro_fire.gif">GIF · Retro Fire</option>
+                  <option value="05_rainbow_wave.gif">GIF · Rainbow Wave</option>
+                  <option value="08_starfield_warp.gif">GIF · Starfield Warp</option>
+                  <option value="07_equalizer_bars.gif">GIF · Equalizer Bars</option>
+                </select>
+                <select id="hwClkBgMode" title="Behind digits (type_bg=4) or inside digits (type_bg=1)">
+                  <option value="behind">Layer: Behind Clock (BG)</option>
+                  <option value="mask">Layer: Inside Digits (Mask)</option>
+                </select>
+              </div>
+              <div class="inline">
+                <input id="hwClkFg" type="color" value="#38bdf8" title="Digits color" />
+                <input id="hwClkAccent" type="color" value="#f43f5e" title="Accent color" />
+                <button id="btnHwClkSend" class="btn primary" style="flex:1;"><svg class="ico sm"><use href="#i-send"/></svg> Sync RTC &amp; Send Selected</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><h2>Built-in Firmware Clock Faces (TLV 0x33)</h2><span class="badge">MCU</span></div>
+            <div class="inline">
+              <label class="muted">Face <input id="fwClkFmt" type="number" min="0" max="10" value="0" style="width:58px;" /></label>
+              <input id="fwClkCol" type="color" value="#38bdf8" />
+              <button id="btnFwClkApply" class="btn sm primary" style="flex:1;">Apply Firmware Face</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pane 2: 18 Built-in GIFs, Online Search & Hardware Games -->
+        <div id="expGifs" class="exp-pane">
+          <div class="card" style="margin-bottom:14px;">
+            <div class="card-header"><h2><svg class="ico"><use href="#i-sparkles"/></svg> 64×64 Work Modes &amp; Pixel Art</h2><span class="badge green">18 Offline GIFs</span></div>
+            <div id="exploreGifGrid" class="grid-auto"></div>
+          </div>
+
+          <div class="card" style="margin-bottom:14px;">
+            <div class="card-header"><h2><svg class="ico"><use href="#i-gamepad"/></svg> Hardware Arcade Games</h2><span class="badge blue">Native MCU</span></div>
+            <div class="inline">
+              <select id="selGameId" style="flex:1;">
+                <option value="0">Game 0 · Snake</option>
+                <option value="1">Game 1 · Blocks / Tetris</option>
+                <option value="2">Game 2 · Breakout</option>
+                <option value="3">Game 3 · Arcade</option>
+              </select>
+              <button id="btnGameLaunch" class="btn primary"><svg class="ico sm"><use href="#i-play"/></svg> Launch</button>
+            </div>
+            <div class="dpad">
+              <div></div><button class="btn game-opt" data-opt="up"><svg class="ico"><use href="#i-up"/></svg></button><div></div>
+              <button class="btn game-opt" data-opt="left"><svg class="ico"><use href="#i-left"/></svg></button>
+              <button class="btn primary game-opt" data-opt="start">OK</button>
+              <button class="btn game-opt" data-opt="right"><svg class="ico"><use href="#i-right"/></svg></button>
+              <div></div><button class="btn game-opt" data-opt="down"><svg class="ico"><use href="#i-down"/></svg></button><div></div>
+            </div>
+            <div class="grid-2">
+              <button class="btn sm game-opt" data-opt="pause">Pause</button>
+              <button class="btn sm danger game-opt" data-opt="exit">Exit Game</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><h2>Online GIF Search</h2><span class="badge amber">Opt-In Internet</span></div>
+            <div class="inline">
+              <select id="gifProvider">
+                <option value="wikimedia">Wikimedia (No Key)</option>
+                <option value="giphy">GIPHY (API Key)</option>
+                <option value="tenor">Tenor v2 (API Key)</option>
+              </select>
+              <input id="gifApiKey" type="text" placeholder="API Key (GIPHY/Tenor)" style="flex:1;" />
+            </div>
+            <div class="inline">
+              <input id="gifQuery" type="text" placeholder="Search pixel, cat, heart..." style="flex:1;" />
+              <button id="btnGifSearch" class="btn primary">Search</button>
+            </div>
+            <div id="gifSearchGrid" class="grid-auto"></div>
+          </div>
+        </div>
+
+        <!-- Pane 3: Saved Library & Hardware Flash Slots -->
+        <div id="expLibrary" class="exp-pane">
+          <div class="card" style="margin-bottom:14px;">
+            <div class="row">
+              <h2><svg class="ico"><use href="#i-grid"/></svg> Saved Creations</h2>
+              <div class="inline">
+                <input id="libSearch" type="text" placeholder="Filter..." style="width:140px;" />
+                <label class="inline muted"><input id="libFavOnly" type="checkbox" /> Starred</label>
+              </div>
+            </div>
+            <div id="libGrid" class="grid-auto"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><h2>Hardware Flash Slots &amp; Playlist</h2><span class="badge green">On-Device</span></div>
+            <div class="inline">
+              <label class="muted">Slot <input id="slotNum" type="number" min="1" max="72" value="1" style="width:62px;" /></label>
+              <button id="btnSlotShow" class="btn sm primary">Show Slot</button>
+              <button id="btnSlotDel" class="btn sm danger">Delete</button>
+            </div>
+            <div class="inline">
+              <input id="playlistInput" type="text" value="1,2,3" placeholder="Slots e.g. 1,2,3" style="flex:1;" />
+              <button id="btnPlaylistLoop" class="btn sm">Loop Slots</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== CREATE STUDIO ==================== -->
       <section id="wsCreate" class="workspace">
-        <div class="pill-bar">
-          <button class="pill active" data-sub="subPixel"><svg class="ico sm"><use href="#i-brush"/></svg> Pixel Art</button>
-          <button class="pill" data-sub="subAnim"><svg class="ico sm"><use href="#i-play"/></svg> Animation</button>
-          <button class="pill" data-sub="subMedia"><svg class="ico sm"><use href="#i-grid"/></svg> Image &amp; Video</button>
+        <div class="pill-bar no-scrollbar">
+          <button class="pill active" data-sub="subPixel"><svg class="ico sm"><use href="#i-brush"/></svg> Pixel</button>
+          <button class="pill" data-sub="subAnim"><svg class="ico sm"><use href="#i-play"/></svg> Animate</button>
+          <button class="pill" data-sub="subMedia"><svg class="ico sm"><use href="#i-grid"/></svg> Photo / Video</button>
           <button class="pill" data-sub="subTextQr">Text &amp; QR</button>
-          <button class="pill" data-sub="subProc"><svg class="ico sm"><use href="#i-sparkles"/></svg> Procedural &amp; Avatars</button>
+          <button class="pill" data-sub="subProc"><svg class="ico sm"><use href="#i-sparkles"/></svg> FX &amp; Avatar</button>
         </div>
 
         <div class="studio-layout">
-          <!-- Centerpiece Canvas -->
+          <!-- Centerpiece Touch Canvas -->
           <div id="canvasCard" class="canvas-card">
-            <div class="row" style="width:100%;">
-              <div class="inline">
-                <button class="btn sm active" data-tool="pen" title="Pen (P)">Pen</button>
-                <button class="btn sm" data-tool="eraser" title="Eraser (E)">Eraser</button>
-                <button class="btn sm" data-tool="line" title="Line (L)">Line</button>
-                <button class="btn sm" data-tool="rect" title="Rectangle (R)">Rect</button>
-                <button class="btn sm" data-tool="circle" title="Circle (C)">Circle</button>
-                <button class="btn sm" data-tool="fill" title="Fill (F)">Fill</button>
-                <button class="btn sm" data-tool="picker" title="Picker (I)">Picker</button>
+            <div class="scroll-strip no-scrollbar" style="width:100%;justify-content:space-between;">
+              <div class="scroll-strip no-scrollbar">
+                <button class="btn sm active" data-tool="pen">Pen</button>
+                <button class="btn sm" data-tool="eraser">Erase</button>
+                <button class="btn sm" data-tool="line">Line</button>
+                <button class="btn sm" data-tool="rect">Rect</button>
+                <button class="btn sm" data-tool="circle">Circle</button>
+                <button class="btn sm" data-tool="fill">Fill</button>
+                <button class="btn sm" data-tool="picker">Pick</button>
               </div>
-              <div class="inline">
-                <button id="btnUndo" class="btn sm icon-btn" title="Undo (Cmd+Z)"><svg class="ico sm"><use href="#i-undo"/></svg></button>
-                <button id="btnRedo" class="btn sm icon-btn" title="Redo (Cmd+Shift+Z)"><svg class="ico sm"><use href="#i-redo"/></svg></button>
-                <button id="btnClear" class="btn sm"><svg class="ico sm"><use href="#i-trash"/></svg> Clear</button>
+              <div class="inline" style="flex-wrap:nowrap;">
+                <button id="btnUndo" class="btn sm icon-btn" title="Undo"><svg class="ico sm"><use href="#i-undo"/></svg></button>
+                <button id="btnRedo" class="btn sm icon-btn" title="Redo"><svg class="ico sm"><use href="#i-redo"/></svg></button>
+                <button id="btnClear" class="btn sm icon-btn" title="Clear"><svg class="ico sm"><use href="#i-trash"/></svg></button>
                 <button id="btnFullscreen" class="btn sm icon-btn" title="Fullscreen"><svg class="ico sm"><use href="#i-maximize"/></svg></button>
               </div>
             </div>
@@ -199,26 +351,23 @@
               <canvas id="pixelCanvas" width="448" height="448"></canvas>
             </div>
 
-            <div class="row" style="width:100%;">
-              <div class="inline">
-                <label class="muted">Brush <input id="brushSize" type="number" min="1" max="5" value="1" style="width:52px;" /></label>
-                <label class="inline muted"><input id="chkSymX" type="checkbox" /> Sym X</label>
-                <label class="inline muted"><input id="chkSymY" type="checkbox" /> Sym Y</label>
-                <label class="inline muted"><input id="chkGrid" type="checkbox" checked /> Grid</label>
-                <label class="inline muted"><input id="chkLedSim" type="checkbox" checked /> LED Dots</label>
-                <label class="inline muted"><input id="chkOnion" type="checkbox" /> Onion</label>
-                <label class="inline muted"><input id="chkLiveDraw" type="checkbox" /> Live BLE</label>
-              </div>
-              <div class="inline">
-                <button id="btnFlipH" class="btn sm">Flip H</button>
-                <button id="btnFlipV" class="btn sm">Flip V</button>
-                <button id="btnRot90" class="btn sm">90°</button>
-                <button id="btnZoomOut" class="btn sm icon-btn">−</button>
-                <button id="btnZoomIn" class="btn sm icon-btn">+</button>
-              </div>
+            <div class="scroll-strip no-scrollbar" style="width:100%;">
+              <label class="inline muted" style="flex-shrink:0;">Size <input id="brushSize" type="number" min="1" max="5" value="1" style="width:48px;" /></label>
+              <label class="inline muted" style="flex-shrink:0;"><input id="chkLedSim" type="checkbox" checked /> LED</label>
+              <label class="inline muted" style="flex-shrink:0;"><input id="chkGrid" type="checkbox" checked /> Grid</label>
+              <label class="inline muted" style="flex-shrink:0;"><input id="chkSymX" type="checkbox" /> SymX</label>
+              <label class="inline muted" style="flex-shrink:0;"><input id="chkSymY" type="checkbox" /> SymY</label>
+              <label class="inline muted" style="flex-shrink:0;"><input id="chkOnion" type="checkbox" /> Onion</label>
+              <label class="inline muted" style="flex-shrink:0;"><input id="chkLiveDraw" type="checkbox" /> Live</label>
+              <button id="btnFlipH" class="btn sm" style="flex-shrink:0;">FlipH</button>
+              <button id="btnFlipV" class="btn sm" style="flex-shrink:0;">FlipV</button>
+              <button id="btnRot90" class="btn sm" style="flex-shrink:0;">90°</button>
+              <button id="btnZoomOut" class="btn sm icon-btn" style="flex-shrink:0;">−</button>
+              <button id="btnZoomIn" class="btn sm icon-btn" style="flex-shrink:0;">+</button>
             </div>
 
             <div id="frameStrip" class="frame-strip"></div>
+            <button id="btnMobCanvasSend" class="btn primary full"><svg class="ico sm"><use href="#i-send"/></svg> Send Artwork to Display</button>
           </div>
 
           <!-- Contextual Inspector -->
@@ -238,8 +387,8 @@
                 <div id="paletteRow" class="palette-row"></div>
                 <h3>Recent Colors</h3>
                 <div id="recentColors" class="palette-row"></div>
-                <div class="row">
-                  <input id="saveArtName" type="text" placeholder="Creation name..." style="flex:1;" />
+                <div class="inline">
+                  <input id="saveArtName" type="text" placeholder="Save creation as..." style="flex:1;" />
                   <button id="btnSaveCreation" class="btn sm primary">Save</button>
                 </div>
               </div>
@@ -248,7 +397,6 @@
             <div id="subAnim" class="sub-pane">
               <div class="card">
                 <h2><svg class="ico"><use href="#i-play"/></svg> Animation Studio</h2>
-                <p class="muted">Drag frame thumbnails below the canvas to reorder.</p>
                 <div class="row">
                   <label class="muted">Frame Delay (ms)</label>
                   <input id="gifDelay" type="number" min="40" max="2000" step="20" value="140" style="width:90px;" />
@@ -287,16 +435,16 @@
                   <button id="btnImgPreview" class="btn sm">Preview</button>
                   <button id="btnImgPalette" class="btn sm">Extract Palette</button>
                 </div>
-                <button id="btnImgSend" class="btn primary full"><svg class="ico sm"><use href="#i-send"/></svg> Send Optimized Image</button>
+                <button id="btnImgSend" class="btn primary full"><svg class="ico sm"><use href="#i-send"/></svg> Send Image</button>
               </div>
 
               <div class="card">
                 <h2>Video Studio (Local FFmpeg)</h2>
                 <input id="vidFile" type="file" accept="video/mp4,video/quicktime,video/webm" />
                 <div class="inline">
-                  <label class="muted">Start(s) <input id="vidStart" type="number" min="0" step="0.5" value="0" style="width:60px;" /></label>
-                  <label class="muted">Len(s) <input id="vidDur" type="number" min="0.5" max="8" step="0.5" value="3" style="width:60px;" /></label>
-                  <label class="muted">FPS <input id="vidFps" type="number" min="4" max="15" value="10" style="width:55px;" /></label>
+                  <label class="muted">Start <input id="vidStart" type="number" min="0" step="0.5" value="0" style="width:56px;" /></label>
+                  <label class="muted">Sec <input id="vidDur" type="number" min="0.5" max="8" step="0.5" value="3" style="width:56px;" /></label>
+                  <label class="muted">FPS <input id="vidFps" type="number" min="4" max="15" value="10" style="width:52px;" /></label>
                 </div>
                 <div id="vidEst" class="muted">Converts locally via FFmpeg to 64×64 GIF.</div>
                 <div class="grid-2">
@@ -348,7 +496,7 @@
 
             <div id="subProc" class="sub-pane">
               <div class="card" style="margin-bottom:14px;">
-                <h2><svg class="ico"><use href="#i-sparkles"/></svg> Procedural Studio</h2>
+                <h2><svg class="ico"><use href="#i-sparkles"/></svg> Procedural FX</h2>
                 <select id="procEffect">
                   <option value="plasma">Plasma Waves</option>
                   <option value="fire">Campfire Flame</option>
@@ -370,7 +518,7 @@
                 <div class="row"><label class="muted">Density</label><input id="procDensity" type="range" min="0.2" max="1.0" step="0.1" value="0.6" /></div>
                 <div id="procEst" class="muted">Generated 100% locally.</div>
                 <div class="grid-2">
-                  <button id="btnProcPreview" class="btn sm">Load Preview</button>
+                  <button id="btnProcPreview" class="btn sm">Preview</button>
                   <button id="btnProcSend" class="btn sm primary">Generate &amp; Send</button>
                 </div>
               </div>
@@ -380,7 +528,7 @@
                 <div class="row">
                   <input id="avPrimary" type="color" value="#3b82f6" />
                   <input id="avAccent" type="color" value="#f43f5e" />
-                  <input id="avBg" type="color" value="#090a0f" />
+                  <input id="avBg" type="color" value="#08090d" />
                   <button id="btnAvRandom" class="btn sm"><svg class="ico sm"><use href="#i-refresh"/></svg> Randomize</button>
                 </div>
                 <button id="btnAvSend" class="btn primary full"><svg class="ico sm"><use href="#i-send"/></svg> Send Avatar</button>
@@ -390,158 +538,77 @@
         </div>
       </section>
 
-      <!-- ==================== EXPLORE ==================== -->
-      <section id="wsExplore" class="workspace">
-        <div class="grid-2" style="margin-bottom:16px;">
-          <!-- Hardware Live RTC Clocks -->
-          <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-clock"/></svg> Hardware Live Clocks</h2><span class="badge green">Autonomous RTC</span></div>
-            <p class="muted">Ticks offline on the display's hardware RTC after Bluetooth disconnects. Click to select, double-click to send:</p>
-            <div id="hwClockGallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(98px,1fr));gap:8px;max-height:320px;overflow-y:auto;padding:4px 2px;"></div>
-            <select id="hwClkShape">
-              <option value="hw_synthwave_sun">Synthwave Sunset + Grid (Live)</option>
-              <option value="hw_neon_ring">Neon Ring + Live Time/Date</option>
-              <option value="hw_pipboy_hud">Sci-Fi Cockpit HUD (Live)</option>
-              <option value="hw_matrix_terminal">Hacker Terminal Window (Live)</option>
-              <option value="hw_gameboy_retro">Retro Handheld LCD (Live)</option>
-              <option value="hw_galaxy_stars">Starlight Moon Night (Live)</option>
-              <option value="hw_arcade_cabinet">Arcade Scoreboard (Live)</option>
-              <option value="hw_heart_bezel">Neon Heartbeat EKG (Live)</option>
-              <option value="hw_gradient_pill">Modern Neon Gradient Pill (Live)</option>
-              <option value="hw_flip_cards">Flip Cards (Live HH | MM)</option>
-              <option value="hw_cyber_frame">Cyber Frame (Time + Date)</option>
-              <option value="hw_stacked">Giant Stacked (HH / MM)</option>
-              <option value="hw_seconds">Live HH:MM + Seconds</option>
-              <option value="hw_date_time">Live Date + HH:MM:SS</option>
-              <option value="hw_minimal">Minimal HH:MM</option>
-            </select>
-            <div class="inline" style="margin-top:4px;">
-              <select id="hwClkBgGif" style="flex:1;" title="Optional animated GIF behind or inside clock digits">
-                <option value="">Static Clock Artwork (Default)</option>
-                <option value="03_matrix_rain.gif">GIF · Matrix Rain</option>
-                <option value="04_retro_fire.gif">GIF · Retro Fire</option>
-                <option value="05_rainbow_wave.gif">GIF · Rainbow Wave</option>
-                <option value="08_starfield_warp.gif">GIF · Starfield Warp</option>
-                <option value="07_equalizer_bars.gif">GIF · Equalizer Bars</option>
-              </select>
-              <select id="hwClkBgMode" style="width:155px;" title="Composite GIF behind digits (type_bg=4) or mask GIF inside digits (type_bg=1)">
-                <option value="behind">Behind Clock (BG)</option>
-                <option value="mask">Inside Digits (Mask)</option>
-              </select>
-            </div>
-            <div class="inline">
-              <input id="hwClkFg" type="color" value="#38bdf8" />
-              <input id="hwClkAccent" type="color" value="#f43f5e" />
-              <button id="btnHwClkSend" class="btn primary" style="flex:1;"><svg class="ico sm"><use href="#i-send"/></svg> Sync RTC &amp; Upload</button>
-            </div>
-            <hr style="border:none;border-top:1px solid var(--border);" />
-            <h3>Built-in Firmware Clock Faces (TLV 0x33)</h3>
-            <div class="inline">
-              <label class="muted">Face <input id="fwClkFmt" type="number" min="0" max="10" value="0" style="width:56px;" /></label>
-              <input id="fwClkCol" type="color" value="#38bdf8" />
-              <button id="btnFwClkApply" class="btn sm">Apply Firmware Face</button>
-            </div>
-          </div>
-
-          <!-- Games & D-Pad -->
-          <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-gamepad"/></svg> Built-in Hardware Games</h2><span class="badge blue">Native Firmware</span></div>
-            <p class="muted">Runs natively on the display microcontroller. Use D-Pad or keyboard arrow keys.</p>
-            <div class="inline">
-              <select id="selGameId" style="flex:1;">
-                <option value="0">Game 0 (Snake / Classic)</option>
-                <option value="1">Game 1 (Blocks / Tetris)</option>
-                <option value="2">Game 2 (Breakout)</option>
-                <option value="3">Game 3 (Arcade)</option>
-              </select>
-              <button id="btnGameLaunch" class="btn primary"><svg class="ico sm"><use href="#i-play"/></svg> Launch</button>
-            </div>
-            <div class="dpad">
-              <div></div><button class="btn game-opt" data-opt="up"><svg class="ico"><use href="#i-up"/></svg></button><div></div>
-              <button class="btn game-opt" data-opt="left"><svg class="ico"><use href="#i-left"/></svg></button>
-              <button class="btn primary game-opt" data-opt="start">OK</button>
-              <button class="btn game-opt" data-opt="right"><svg class="ico"><use href="#i-right"/></svg></button>
-              <div></div><button class="btn game-opt" data-opt="down"><svg class="ico"><use href="#i-down"/></svg></button><div></div>
-            </div>
-            <div class="grid-2">
-              <button class="btn sm game-opt" data-opt="pause">Pause</button>
-              <button class="btn sm danger game-opt" data-opt="exit">Exit Game</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-bottom:16px;">
-          <div class="card-header"><h2><svg class="ico"><use href="#i-sparkles"/></svg> Built-in 64×64 Pixel Art &amp; Work Modes</h2><span class="badge green">18 Offline GIFs</span></div>
-          <div id="exploreGifGrid" class="grid-auto"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-header"><h2>Online GIF Search</h2><span class="badge amber">Opt-In Internet</span></div>
-          <div class="inline">
-            <select id="gifProvider">
-              <option value="wikimedia">Wikimedia (No Key)</option>
-              <option value="giphy">GIPHY (API Key)</option>
-              <option value="tenor">Tenor v2 (API Key)</option>
-            </select>
-            <input id="gifApiKey" type="text" placeholder="API Key (only for GIPHY/Tenor)" style="flex:1;" />
-            <input id="gifQuery" type="text" placeholder="Search pixel, cat, heart..." style="flex:1;" />
-            <button id="btnGifSearch" class="btn primary">Search</button>
-          </div>
-          <div id="gifSearchGrid" class="grid-auto"></div>
-        </div>
-      </section>
-
-      <!-- ==================== LIBRARY ==================== -->
-      <section id="wsLibrary" class="workspace">
-        <div class="card" style="margin-bottom:16px;">
+      <!-- ==================== AUTO SCHEDULE ==================== -->
+      <section id="wsSchedule" class="workspace">
+        <div class="card" style="margin-bottom:14px;">
           <div class="row">
-            <h2><svg class="ico"><use href="#i-grid"/></svg> Saved Creations</h2>
-            <div class="inline">
-              <input id="libSearch" type="text" placeholder="Filter creations..." />
-              <label class="inline muted"><input id="libFavOnly" type="checkbox" /> Favorites only</label>
+            <div>
+              <h2><svg class="ico"><use href="#i-clock"/></svg> Auto Mode Scheduler</h2>
+              <p class="muted" id="schedActiveBadge" style="margin-top:2px;">Evaluating schedule…</p>
             </div>
+            <label class="inline" style="gap:8px;font-weight:650;">
+              <input id="schedEnabled" type="checkbox" checked /> Auto
+            </label>
           </div>
-          <div id="libGrid" class="grid-auto"></div>
+          <div class="grid-2" style="gap:8px;">
+            <button id="btnSchedApplyNow" class="btn sm primary"><svg class="ico sm"><use href="#i-play"/></svg> Apply Current Now</button>
+            <button id="btnSchedAddTop" class="btn sm"><svg class="ico sm"><use href="#i-plus"/></svg> New Rule</button>
+          </div>
+          <div class="scroll-strip no-scrollbar" style="padding-top:8px;border-top:1px solid var(--border);">
+            <span class="muted" style="flex-shrink:0;">Presets:</span>
+            <button class="btn sm" data-sched-preset="developer">Developer Day</button>
+            <button class="btn sm" data-sched-preset="minimal_clock">Clock + Night Off</button>
+            <button class="btn sm" data-sched-preset="creator">Creator / Stream</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px;">
+          <div class="row">
+            <h3>24-Hour Visual Timeline</h3>
+            <div id="schedDayTabs" class="scroll-strip no-scrollbar" style="gap:4px;"></div>
+          </div>
+          <div id="schedTimelineBar" style="position:relative;height:32px;border-radius:9px;background:var(--surface-elev);border:1px solid var(--border);overflow:hidden;"></div>
+          <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--text-muted);font-family:var(--font-mono);">
+            <span>00h</span><span>06h</span><span>12h</span><span>18h</span><span>24h</span>
+          </div>
+          <div id="schedTimelineLegend" class="inline" style="gap:8px;font-size:11.5px;"></div>
         </div>
 
         <div class="card">
-          <div class="card-header"><h2>Hardware Slots &amp; Autonomous Playlist</h2><span class="badge green">On-Device Flash</span></div>
-          <div class="inline">
-            <label class="muted">Slot <input id="slotNum" type="number" min="1" max="72" value="1" style="width:68px;" /></label>
-            <button id="btnSlotShow" class="btn sm primary">Switch to Slot</button>
-            <button id="btnSlotDel" class="btn sm danger">Delete Slot</button>
-            <input id="playlistInput" type="text" value="1,2,3" style="width:120px;" />
-            <button id="btnPlaylistLoop" class="btn sm">Start Hardware Loop</button>
+          <div class="card-header">
+            <h3>Schedule Rules <span class="muted" style="font-weight:400;">(Top match wins)</span></h3>
+            <button id="btnSchedAdd" class="btn sm primary"><svg class="ico sm"><use href="#i-plus"/></svg> Add</button>
           </div>
+          <div id="schedRulesList" style="display:flex;flex-direction:column;gap:12px;"></div>
         </div>
       </section>
 
-      <!-- ==================== LIVE ==================== -->
+      <!-- ==================== SMART & LIVE ==================== -->
       <section id="wsLive" class="workspace">
         <div class="grid-3">
           <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-zap"/></svg> Mac Context Auto-Mode</h2><span class="badge green">100% Local</span></div>
-            <div id="macCtxReadout" class="muted" style="font-size:12px;">App: — · Call: — · Idle: —</div>
+            <div class="card-header"><h2><svg class="ico"><use href="#i-zap"/></svg> Mac Context Auto-Mode</h2><span class="badge green">Local</span></div>
+            <div id="macCtxReadout" class="muted">App: — · Call: — · Idle: —</div>
             <label class="inline" style="gap:8px;font-weight:600;"><input id="ctxEnabled" type="checkbox" /> Zero-Touch Auto-Switch</label>
-            <label class="inline muted" style="gap:8px;font-size:12px;"><input id="ctxOnAir" type="checkbox" checked /> Auto ON AIR on Camera / Zoom</label>
-            <label class="inline muted" style="gap:8px;font-size:12px;"><input id="ctxCoding" type="checkbox" checked /> Auto Coding Mode in IDE / Terminal</label>
-            <label class="inline muted" style="gap:8px;font-size:12px;"><input id="ctxIdle" type="checkbox" checked /> Auto BRB after <input id="ctxIdleMin" type="number" min="1" max="60" value="5" style="width:48px;" />m idle</label>
-            <label class="inline muted" style="gap:8px;font-size:12px;"><input id="ctxCal" type="checkbox" /> Apple Calendar 5-min Meeting Alert</label>
+            <label class="inline muted" style="gap:8px;"><input id="ctxOnAir" type="checkbox" checked /> Auto ON AIR on Camera / Zoom</label>
+            <label class="inline muted" style="gap:8px;"><input id="ctxCoding" type="checkbox" checked /> Auto Coding in IDE / Terminal</label>
+            <label class="inline muted" style="gap:8px;"><input id="ctxIdle" type="checkbox" checked /> Auto BRB after <input id="ctxIdleMin" type="number" min="1" max="60" value="5" style="width:48px;" />m idle</label>
+            <label class="inline muted" style="gap:8px;"><input id="ctxCal" type="checkbox" /> Calendar 5m Meeting Alert</label>
           </div>
 
           <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-cloud"/></svg> Pixel Weather + Clock</h2><span class="badge amber">Opt-In Open-Meteo</span></div>
-            <div id="wxReadout" class="muted" style="font-size:12px;">Animated pixel weather + autonomous hardware RTC clock.</div>
+            <div class="card-header"><h2><svg class="ico"><use href="#i-cloud"/></svg> Pixel Weather + Clock</h2><span class="badge amber">Open-Meteo</span></div>
+            <div id="wxReadout" class="muted">Animated pixel weather + autonomous hardware RTC clock.</div>
             <div class="inline">
               <input id="wxCity" type="text" value="Berlin" placeholder="City name" style="flex:1;" />
               <button id="btnWxSend" class="btn sm primary"><svg class="ico sm"><use href="#i-send"/></svg> Send</button>
             </div>
-            <label class="inline muted" style="gap:8px;font-size:12px;"><input id="wxAuto" type="checkbox" /> Auto-refresh weather every 30m</label>
+            <label class="inline muted" style="gap:8px;"><input id="wxAuto" type="checkbox" /> Auto-refresh every 30m</label>
           </div>
 
           <div class="card">
             <div class="card-header"><h2><svg class="ico"><use href="#i-bell"/></svg> Alert Webhook</h2><span class="badge blue">POST /api/notify</span></div>
-            <p class="muted" style="font-size:12px;">Flashes a temporary alert in RAM Slot 2, then restores Slot 1 automatically.</p>
+            <p class="muted">Flashes a temporary alert in RAM Slot 2, then restores Slot 1.</p>
             <div class="inline">
               <input id="ntfTitle" type="text" value="BUILD OK" placeholder="Title" style="flex:1;" />
               <input id="ntfSub" type="text" value="ALL PASS" placeholder="Subtitle" style="flex:1;" />
@@ -560,18 +627,30 @@
           </div>
 
           <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-droplet"/></svg> Hydration Reminder</h2><span class="badge green">Animated H2O</span></div>
-            <p class="muted" style="font-size:12px;">Flashes an animated falling water-drop glass reminder and restores your display.</p>
+            <div class="card-header"><h2><svg class="ico"><use href="#i-droplet"/></svg> Hydration Reminder</h2><span class="badge green">H2O</span></div>
             <button id="btnHydrateNow" class="btn sm primary full"><svg class="ico sm"><use href="#i-droplet"/></svg> Flash Drink H2O Now</button>
-            <label class="inline muted" style="gap:8px;font-size:12px;">
+            <label class="inline muted" style="gap:8px;">
               <input id="hydEnabled" type="checkbox" /> Remind every <input id="hydMin" type="number" min="15" max="180" value="60" style="width:52px;" /> min
             </label>
           </div>
 
           <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-clock"/></svg> Pomodoro Focus</h2><span class="badge amber">Host Connected</span></div>
+            <div class="card-header"><h2><svg class="ico"><use href="#i-mic"/></svg> Room Mic &amp; Ambient</h2><span class="badge green">Hardware</span></div>
+            <div class="inline">
+              <label class="muted">Mic Style <input id="micStyle" type="number" min="0" max="10" value="0" style="width:56px;" /></label>
+              <button id="btnMicEnable" class="btn sm primary" style="flex:1;"><svg class="ico sm"><use href="#i-mic"/></svg> Enable Mic</button>
+            </div>
+            <div class="inline">
+              <select id="ambMode" style="flex:1;"><option value="0">Dynamic Ambient</option><option value="1">Solid Ambient</option></select>
+              <input id="ambCol" type="color" value="#3b82f6" />
+              <button id="btnAmbApply" class="btn sm">Apply</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><h2><svg class="ico"><use href="#i-clock"/></svg> Pomodoro Focus</h2><span class="badge amber">Timer</span></div>
             <div class="row">
-              <label class="muted">Minutes <input id="pomoMin" type="number" min="1" max="90" value="25" style="width:68px;" /></label>
+              <label class="muted">Min <input id="pomoMin" type="number" min="1" max="90" value="25" style="width:62px;" /></label>
               <span id="pomoReadout" style="font-size:20px;font-weight:700;font-family:var(--font-mono);">25:00</span>
             </div>
             <div class="grid-2">
@@ -581,17 +660,17 @@
           </div>
 
           <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-cpu"/></svg> macOS System &amp; Music</h2><span class="badge amber">Host Connected</span></div>
+            <div class="card-header"><h2><svg class="ico"><use href="#i-cpu"/></svg> macOS System &amp; Music</h2><span class="badge">Local</span></div>
             <div id="sysStatsReadout" class="muted">CPU: — · RAM: —</div>
             <div id="nowPlayingReadout" class="muted">Now Playing: —</div>
             <div class="grid-2">
               <button id="btnSendSysWidget" class="btn sm primary">Send CPU/RAM</button>
-              <button id="btnSendNpWidget" class="btn sm">Send Now Playing</button>
+              <button id="btnSendNpWidget" class="btn sm">Now Playing</button>
             </div>
           </div>
 
           <div class="card">
-            <div class="card-header"><h2>Status &amp; Info Card</h2><span class="badge blue">One-Shot</span></div>
+            <div class="card-header"><h2>Status Card</h2><span class="badge blue">One-Shot</span></div>
             <input id="cardTitle" type="text" value="IN FOCUS" placeholder="Title" />
             <input id="cardSub" type="text" value="DO NOT DISTURB" placeholder="Subtitle" />
             <div class="inline">
@@ -601,50 +680,37 @@
           </div>
 
           <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-mic"/></svg> Room Mic &amp; Ambient</h2><span class="badge green">Native Hardware</span></div>
+            <div class="card-header"><h2>Countdown &amp; Scoreboard</h2><span class="badge green">Hardware</span></div>
             <div class="inline">
-              <label class="muted">Mic Style <input id="micStyle" type="number" min="0" max="10" value="0" style="width:56px;" /></label>
-              <button id="btnMicEnable" class="btn sm primary"><svg class="ico sm"><use href="#i-mic"/></svg> Enable Mic</button>
+              <input id="cdM" type="number" min="0" max="59" value="5" style="width:54px;" />
+              <input id="cdS" type="number" min="0" max="59" value="0" style="width:54px;" />
+              <button id="btnCdStart" class="btn sm primary" style="flex:1;">Countdown</button>
             </div>
             <div class="inline">
-              <select id="ambMode"><option value="0">Dynamic Ambient</option><option value="1">Solid Ambient</option></select>
-              <input id="ambCol" type="color" value="#3b82f6" />
-              <button id="btnAmbApply" class="btn sm">Apply</button>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-header"><h2>Countdown &amp; Scoreboard</h2><span class="badge green">Native Hardware</span></div>
-            <div class="inline">
-              <input id="cdM" type="number" min="0" max="59" value="5" style="width:56px;" />
-              <input id="cdS" type="number" min="0" max="59" value="0" style="width:56px;" />
-              <button id="btnCdStart" class="btn sm primary">Countdown</button>
-            </div>
-            <div class="inline">
-              <input id="sbR" type="number" min="0" max="999" value="0" style="width:62px;" />
-              <input id="sbB" type="number" min="0" max="999" value="0" style="width:62px;" />
-              <button id="btnSbSet" class="btn sm">Scoreboard</button>
+              <input id="sbR" type="number" min="0" max="999" value="0" style="width:58px;" />
+              <input id="sbB" type="number" min="0" max="999" value="0" style="width:58px;" />
+              <button id="btnSbSet" class="btn sm" style="flex:1;">Scoreboard</button>
             </div>
           </div>
         </div>
       </section>
 
-      <!-- ==================== DEVICE ==================== -->
+      <!-- ==================== DEVICE & PHONE PAIRING ==================== -->
       <section id="wsDevice" class="workspace">
-        <div class="grid-2" style="margin-bottom:16px;">
+        <div class="grid-2" style="margin-bottom:14px;">
           <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-bluetooth"/></svg> Bluetooth Connection</h2><button id="btnDevScan" class="btn sm primary"><svg class="ico sm"><use href="#i-bluetooth"/></svg> Scan Displays</button></div>
+            <div class="card-header"><h2><svg class="ico"><use href="#i-bluetooth"/></svg> Bluetooth Connection</h2><button id="btnDevScan" class="btn sm primary"><svg class="ico sm"><use href="#i-bluetooth"/></svg> Scan</button></div>
             <div id="devList" style="display:flex;flex-direction:column;gap:8px;">
-              <p class="muted">Click Scan Displays to discover YS/TL LED panels, or use Simulator.</p>
+              <p class="muted">Tap Scan to discover YS/TL LED panels, or test with Simulator.</p>
             </div>
             <div class="inline">
-              <button id="btnDevMock" class="btn sm">Connect Simulator (64×64)</button>
-              <button id="btnDevDisconnect" class="btn sm danger hidden">Disconnect</button>
+              <button id="btnDevMock" class="btn sm" style="flex:1;">Simulator (64×64)</button>
+              <button id="btnDevDisconnect" class="btn sm danger hidden" style="flex:1;">Disconnect</button>
             </div>
           </div>
 
           <div class="card">
-            <h2><svg class="ico"><use href="#i-sliders"/></svg> Display &amp; Transfer Settings</h2>
+            <h2><svg class="ico"><use href="#i-sliders"/></svg> Display &amp; BLE Settings</h2>
             <div class="row">
               <label class="muted">Rotation</label>
               <select id="devRotate"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select>
@@ -654,50 +720,49 @@
               <input id="devMirror" type="checkbox" />
             </div>
             <div class="row">
-              <label class="muted">BLE Transfer Profile</label>
+              <label class="muted">BLE Profile</label>
               <select id="devProfile">
-                <option value="ys_l_fast" selected>YS*L Fast (180B · 2ms · Verified EXYC-A)</option>
-                <option value="conservative">Conservative (180B · 15ms · Verified EXYC-A)</option>
-                <option value="safe_ack">Safe ACK (180B · Write-With-Response)</option>
-                <option value="ys_l_swnd3" disabled>YS*L SWND3 (Incompatible with EXYC-A)</option>
-                <option value="balanced" disabled>Balanced (248B · SWND 5 · EX* High-Speed Only)</option>
-                <option value="fast" disabled>Fast (509B · SWND 10 · EX* V2.8.9+ Only)</option>
+                <option value="ys_l_fast" selected>YS*L Fast (180B · 2ms · Verified)</option>
+                <option value="conservative">Conservative (180B · 15ms · Verified)</option>
+                <option value="safe_ack">Safe ACK (Write-With-Response)</option>
+                <option value="ys_l_swnd3" disabled>YS*L SWND3 (Blocked on EXYC-A)</option>
+                <option value="balanced" disabled>Balanced (EX* High-Speed Only)</option>
+                <option value="fast" disabled>Fast (EX* V2.8.9+ Only)</option>
               </select>
             </div>
             <div class="inline">
-              <button id="btnRunBench" class="btn sm">Run Throughput Benchmark</button>
+              <button id="btnRunBench" class="btn sm">Run Benchmark</button>
               <span id="benchResult" class="muted"></span>
             </div>
             <hr style="border:none;border-top:1px solid var(--border);" />
-            <h3>Autonomous Hardware Schedules (On-Device RTC)</h3>
+            <h3>Hardware On-Device RTC Schedules</h3>
             <div class="inline">
-              <label class="muted">Day <input id="schDayTime" type="text" value="08:00" style="width:64px;" /> Lvl <input id="schDayLvl" type="number" min="1" max="15" value="12" style="width:52px;" /></label>
-              <label class="muted">Night <input id="schNightTime" type="text" value="22:00" style="width:64px;" /> Lvl <input id="schNightLvl" type="number" min="1" max="15" value="2" style="width:52px;" /></label>
-              <button id="btnBriSchedule" class="btn sm primary">Save Dimming</button>
+              <label class="muted">Day <input id="schDayTime" type="text" value="08:00" style="width:62px;" /> Lvl <input id="schDayLvl" type="number" min="1" max="15" value="12" style="width:48px;" /></label>
+              <label class="muted">Night <input id="schNightTime" type="text" value="22:00" style="width:62px;" /> Lvl <input id="schNightLvl" type="number" min="1" max="15" value="2" style="width:48px;" /></label>
+              <button id="btnBriSchedule" class="btn sm primary">Save</button>
             </div>
             <div class="inline">
-              <label class="muted">Auto Power Window <input id="schPowerWin" type="text" value="08:00-23:00" style="width:115px;" /></label>
-              <button id="btnPowSchedule" class="btn sm">Save Power Schedule</button>
+              <label class="muted">Power Window <input id="schPowerWin" type="text" value="08:00-23:00" style="width:110px;" /></label>
+              <button id="btnPowSchedule" class="btn sm">Save</button>
             </div>
           </div>
         </div>
 
-        <!-- Connect from Phone -->
-        <div class="card" style="margin-bottom:16px;">
+        <div class="card" style="margin-bottom:14px;">
           <div class="card-header">
-            <h2><svg class="ico"><use href="#i-smartphone"/></svg> Connect from Phone (Local Wi-Fi)</h2>
+            <h2><svg class="ico"><use href="#i-smartphone"/></svg> Connect from iPhone / iPad (Wi-Fi)</h2>
             <span id="lanStatusBadge" class="badge">Localhost Only</span>
           </div>
-          <div class="home-hero" style="grid-template-columns:180px 1fr;">
-            <div style="background:#fff;padding:10px;border-radius:12px;display:grid;place-items:center;">
-              <img id="phoneQrImg" alt="Scan to open LOY Studio on phone" style="width:156px;height:156px;image-rendering:pixelated;" />
+          <div class="phone-pair-grid">
+            <div style="background:#fff;padding:10px;border-radius:14px;display:grid;place-items:center;margin:0 auto;">
+              <img id="phoneQrImg" alt="Scan to open LOY Studio on phone" style="width:152px;height:152px;image-rendering:pixelated;" />
             </div>
-            <div style="display:flex;flex-direction:column;gap:10px;">
-              <p class="muted" id="phoneLanHint">Start with <code>python app/server.py --lan</code> to allow phone access over your local Wi-Fi network.</p>
+            <div style="display:flex;flex-direction:column;gap:10px;min-width:0;">
+              <p class="muted" id="phoneLanHint">Scan QR with your phone camera on the same Wi-Fi to control your panel remotely.</p>
               <div class="inline">
                 <input id="phoneUrlBox" type="text" readonly style="flex:1;font-family:var(--font-mono);font-size:12px;" />
-                <button id="btnCopyPhoneUrl" class="btn sm"><svg class="ico sm"><use href="#i-copy"/></svg> Copy URL</button>
-                <button id="btnRotateToken" class="btn sm"><svg class="ico sm"><use href="#i-refresh"/></svg> Rotate Token</button>
+                <button id="btnCopyPhoneUrl" class="btn sm"><svg class="ico sm"><use href="#i-copy"/></svg> Copy</button>
+                <button id="btnRotateToken" class="btn sm"><svg class="ico sm"><use href="#i-refresh"/></svg> Rotate</button>
               </div>
               <div>
                 <h3>Connected Clients (<span id="clientCount">0</span>)</h3>
@@ -708,81 +773,33 @@
         </div>
 
         <details class="card">
-          <summary style="cursor:pointer;font-weight:600;font-size:14px;">Developer Mode &amp; Diagnostics</summary>
+          <summary style="cursor:pointer;font-weight:600;font-size:14px;">Developer Mode &amp; Packet Diagnostics</summary>
           <div style="margin-top:14px;display:flex;flex-direction:column;gap:12px;">
             <div class="row">
               <div id="diagSummary" class="muted">UUIDs: 0000FFF0 / FFF1 / FFF2</div>
               <div class="inline">
-                <button id="btnRefreshPkts" class="btn sm"><svg class="ico sm"><use href="#i-refresh"/></svg> Refresh Logs</button>
-                <button id="btnExportDiag" class="btn sm">Export Diagnostics JSON</button>
-                <button id="btnClearFlash" class="btn sm danger"><svg class="ico sm"><use href="#i-trash"/></svg> Clear Device Flash…</button>
+                <button id="btnRefreshPkts" class="btn sm"><svg class="ico sm"><use href="#i-refresh"/></svg> Refresh</button>
+                <button id="btnExportDiag" class="btn sm">Export JSON</button>
+                <button id="btnClearFlash" class="btn sm danger"><svg class="ico sm"><use href="#i-trash"/></svg> Clear Flash…</button>
               </div>
             </div>
             <div id="packetLog" class="mono-box"></div>
           </div>
         </details>
       </section>
-
-      <!-- ==================== SCHEDULE ==================== -->
-      <section id="wsSchedule" class="workspace">
-        <div class="card" style="margin-bottom:16px;">
-          <div class="card-header" style="flex-wrap:wrap;gap:10px;">
-            <div>
-              <h2><svg class="ico"><use href="#i-clock"/></svg> Auto Mode Scheduler</h2>
-              <p class="muted" style="margin-top:2px;">Full control over what your 64×64 LED panel shows every hour of every day — plus automatic brightness.</p>
-            </div>
-            <div class="inline" style="flex-wrap:wrap;gap:8px;">
-              <span id="schedActiveBadge" class="badge green">Idle</span>
-              <label class="inline" style="gap:8px;font-size:13px;font-weight:600;padding:5px 12px;border-radius:9px;background:var(--surface-elev);border:1px solid var(--border);">
-                <input id="schedEnabled" type="checkbox" checked /> Auto-Switch
-              </label>
-              <button id="btnSchedApplyNow" class="btn sm primary"><svg class="ico sm"><use href="#i-play"/></svg> Apply Current Now</button>
-              <button id="btnSchedAddTop" class="btn sm"><svg class="ico sm"><use href="#i-plus"/></svg> New Rule</button>
-            </div>
-          </div>
-          <div class="inline" style="flex-wrap:wrap;gap:8px;padding-top:10px;border-top:1px solid var(--border);">
-            <span class="muted" style="font-size:12px;">Quick Weekly Presets:</span>
-            <button class="btn sm" data-sched-preset="developer">Developer Workday</button>
-            <button class="btn sm" data-sched-preset="minimal_clock">Live Clock + Night Off</button>
-            <button class="btn sm" data-sched-preset="creator">Creator / Streamer</button>
-          </div>
-        </div>
-
-        <div class="card" style="margin-bottom:16px;">
-          <div class="card-header" style="flex-wrap:wrap;gap:8px;">
-            <h3>24-Hour Visual Timeline</h3>
-            <div id="schedDayTabs" class="inline" style="gap:4px;"></div>
-          </div>
-          <div id="schedTimelineBar" style="position:relative;height:36px;border-radius:8px;background:var(--surface-elev);border:1px solid var(--border);overflow:hidden;margin-top:8px;"></div>
-          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);font-family:var(--font-mono);margin-top:4px;">
-            <span>00:00</span><span>04:00</span><span>08:00</span><span>12:00</span><span>16:00</span><span>20:00</span><span>24:00</span>
-          </div>
-          <div id="schedTimelineLegend" class="inline" style="flex-wrap:wrap;gap:10px;margin-top:8px;font-size:12px;"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-header">
-            <h3>Schedule Rules <span class="muted" style="font-weight:400;font-size:12px;">(Top matching rule wins · Changes save automatically)</span></h3>
-            <button id="btnSchedAdd" class="btn sm primary"><svg class="ico sm"><use href="#i-plus"/></svg> Add Rule</button>
-          </div>
-          <div id="schedRulesList" style="display:flex;flex-direction:column;gap:10px;margin-top:10px;"></div>
-        </div>
-      </section>
     </div>
   </div>
 
-  <!-- Mobile Bottom Navigation -->
-  <nav class="mobile-nav">
-    <button class="active" data-ws="wsHome"><svg class="ico"><use href="#i-home"/></svg>Home</button>
-    <button data-ws="wsCreate"><svg class="ico"><use href="#i-brush"/></svg>Create</button>
-    <button data-ws="wsExplore"><svg class="ico"><use href="#i-sparkles"/></svg>Explore</button>
-    <button data-ws="wsLibrary"><svg class="ico"><use href="#i-grid"/></svg>Library</button>
-    <button data-ws="wsLive"><svg class="ico"><use href="#i-activity"/></svg>Live</button>
-    <button data-ws="wsSchedule"><svg class="ico"><use href="#i-clock"/></svg>Sched</button>
-    <button data-ws="wsDevice"><svg class="ico"><use href="#i-sliders"/></svg>Device</button>
+  <!-- Floating 5-Tab iOS Glass Dock (Mobile Only — Zero Crowding!) -->
+  <nav class="mobile-dock">
+    <button class="dock-item active" data-ws="wsHome"><svg class="ico"><use href="#i-home"/></svg><span>Home</span></button>
+    <button class="dock-item" data-ws="wsExplore"><svg class="ico"><use href="#i-sparkles"/></svg><span>Explore</span></button>
+    <button class="dock-fab" data-ws="wsCreate" aria-label="Create Studio"><svg class="ico lg"><use href="#i-brush"/></svg></button>
+    <button class="dock-item" data-ws="wsSchedule"><svg class="ico"><use href="#i-clock"/></svg><span>Schedule</span></button>
+    <button class="dock-item" data-ws="wsLive"><svg class="ico"><use href="#i-zap"/></svg><span>Smart</span></button>
   </nav>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=7"></script>
+  <script src="/static/app.js?v=8"></script>
 </body>
 </html>
