@@ -10,7 +10,7 @@
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <title>LOY Studio — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=11" />
+  <link rel="stylesheet" href="/static/style.css?v=12" />
 </head>
 <body>
   <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
@@ -349,6 +349,30 @@
               <button class="btn sm" data-tool="picker">Pick</button>
             </div>
 
+            <!-- Movable Text / Emoji Floating Layer Bar -->
+            <div id="floatingItemBar" class="floating-bar hidden">
+              <div class="row" style="width:100%;gap:6px;">
+                <span id="floatingLabel" class="badge blue" style="font-size:11.5px;">Drag to move</span>
+                <div class="inline" style="gap:4px;">
+                  <button id="btnFloatSmaller" class="btn sm icon-btn" title="Smaller">−</button>
+                  <button id="btnFloatBigger" class="btn sm icon-btn" title="Bigger">+</button>
+                  <select id="selFloatAnim" style="padding:5px 8px;font-size:12px;width:auto;">
+                    <option value="none">Static</option>
+                    <option value="pulse">Pulse</option>
+                    <option value="bounce">Bounce</option>
+                    <option value="wiggle">Wiggle</option>
+                    <option value="float">Float</option>
+                    <option value="spin">Spin</option>
+                    <option value="sparkle">Sparkle</option>
+                  </select>
+                </div>
+              </div>
+              <div class="inline" style="width:100%;gap:6px;">
+                <button id="btnFloatCommit" class="btn sm primary" style="flex:1;">✓ Place on Canvas</button>
+                <button id="btnFloatCancel" class="btn sm danger">✕ Cancel</button>
+              </div>
+            </div>
+
             <div class="canvas-viewport">
               <canvas id="pixelCanvas" width="448" height="448"></canvas>
             </div>
@@ -401,20 +425,26 @@
 
             <div id="subStamps" class="sub-pane">
               <div class="card" style="margin-bottom:14px;">
-                <div class="card-header"><h2><svg class="ico"><use href="#i-sparkles"/></svg> Emoji &amp; Text Stamps</h2><span class="badge blue">On Canvas</span></div>
+                <div class="card-header"><h2><svg class="ico"><use href="#i-sparkles"/></svg> Animated Emojis</h2><span class="badge green">Live GIF</span></div>
+                <p class="muted" style="font-size:12px;">Tap an animated emoji, drag it anywhere on the canvas, then tap <b>✓ Place</b>.</p>
+                <div id="animEmojiGrid" class="anim-emoji-grid"></div>
+              </div>
+
+              <div class="card" style="margin-bottom:14px;">
+                <div class="card-header"><h2><svg class="ico"><use href="#i-sparkles"/></svg> Movable Text &amp; Emojis</h2><span class="badge blue">Drag &amp; Drop</span></div>
                 <div class="inline">
-                  <input id="stampTextInput" type="text" value="HI!" placeholder="Type text to stamp..." style="flex:1;" />
+                  <input id="stampTextInput" type="text" value="HI!" placeholder="Type text to add..." style="flex:1;" />
                   <select id="stampSize" style="width:94px;">
-                    <option value="22">Small</option>
-                    <option value="36" selected>Medium</option>
-                    <option value="52">Large</option>
+                    <option value="20">Small</option>
+                    <option value="32" selected>Medium</option>
+                    <option value="46">Large</option>
                   </select>
                 </div>
                 <div class="inline">
-                  <button id="btnStampTextCenter" class="btn sm primary" style="flex:1;">Stamp Text</button>
-                  <label class="inline muted" style="font-size:12px;"><input id="chkTapPlace" type="checkbox" /> Tap canvas to place</label>
+                  <button id="btnStampTextCenter" class="btn sm primary" style="flex:1;">Add Movable Text</button>
+                  <label class="inline muted" style="font-size:12px;"><input id="chkTapPlace" type="checkbox" /> Quick-stamp</label>
                 </div>
-                <h3>Tap Emoji to Stamp on Canvas</h3>
+                <h3>Tap Emoji to Add &amp; Drag</h3>
                 <div id="emojiStampGrid" class="emoji-grid"></div>
               </div>
 
@@ -851,6 +881,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=11"></script>
+  <script src="/static/app.js?v=12"></script>
 </body>
 </html>

@@ -19,6 +19,11 @@
   let connected = false;
   let recentSent = [];
   let draggedFrameIdx = null;
+  let floatingItem = null; // { type: 'text'|'emoji', text, cx, cy, size, color, anim }
+  let floatingPhase = 0;
+  let floatingTimer = null;
+  let isDraggingFloat = false;
+  let floatDragOffset = [0, 0];
 
   const canvas = document.getElementById("pixelCanvas");
   const ctx = canvas.getContext("2d");
@@ -171,7 +176,13 @@
     const ledSim = $("chkLedSim").checked;
     const onion = $("chkOnion").checked && activeFrame > 0;
     const prevBuf = onion ? frames[activeFrame - 1] : null;
-    const buf = frames[activeFrame];
+    const baseBuf = frames[activeFrame];
+    let buf = baseBuf;
+    let floatBox = null;
+    if (floatingItem) {
+      buf = new Uint8Array(baseBuf);
+      floatBox = compositeFloatingGlyph(buf, floatingItem, floatingPhase);
+    }
 
     ctx.fillStyle = "#050608";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -197,6 +208,19 @@
           ctx.fillRect(px, py, showGrid ? zoomScale - 1 : zoomScale, showGrid ? zoomScale - 1 : zoomScale);
         }
       }
+    }
+    if (floatBox) {
+      ctx.save();
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(
+        Math.max(1, floatBox.minX * zoomScale - 2),
+        Math.max(1, floatBox.minY * zoomScale - 2),
+        Math.max(12, (floatBox.maxX - floatBox.minX + 1) * zoomScale + 4),
+        Math.max(12, (floatBox.maxY - floatBox.minY + 1) * zoomScale + 4)
+      );
+      ctx.restore();
     }
     renderHomePreview();
   }
@@ -332,6 +356,10 @@
       recentColors = recentColors.slice(0, 10);
       renderRecentColors();
     }
+    if (floatingItem && floatingItem.type === "text") {
+      floatingItem.color = hex;
+      renderCanvas();
+    }
   }
 
   let lastDrawPos = null;
@@ -345,6 +373,11 @@
     e.preventDefault();
     try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
     const [x, y] = pointerToCell(e);
+    if (floatingItem) {
+      isDraggingFloat = true;
+      floatDragOffset = [x - floatingItem.cx, y - floatingItem.cy];
+      return;
+    }
     const buf = frames[activeFrame];
     if (currentTool === "picker") {
       const off = (y * gridW + x) * 3;
@@ -353,7 +386,7 @@
       return;
     }
     if ($("chkTapPlace")?.checked && activeStampEmoji) {
-      stampGlyphToCanvas(activeStampEmoji, x, y, Number($("stampSize")?.value) || 36, null);
+      stampGlyphToCanvas(activeStampEmoji, x, y, Number($("stampSize")?.value) || 32, null);
       return;
     }
     pushUndo();
@@ -380,6 +413,14 @@
   });
 
   canvas.addEventListener("pointermove", (e) => {
+    if (isDraggingFloat && floatingItem) {
+      e.preventDefault();
+      const [x, y] = pointerToCell(e);
+      floatingItem.cx = Math.max(2, Math.min(gridW - 2, x - floatDragOffset[0]));
+      floatingItem.cy = Math.max(2, Math.min(gridH - 2, y - floatDragOffset[1]));
+      renderCanvas();
+      return;
+    }
     if (!isDrawing) return;
     e.preventDefault();
     const [x, y] = pointerToCell(e);
@@ -403,6 +444,7 @@
   });
 
   function finishStroke() {
+    if (isDraggingFloat) { isDraggingFloat = false; return; }
     if (!isDrawing) return;
     isDrawing = false; shapeStart = null; shapeSnapshot = null; lastDrawPos = null;
     renderFrameStrip(); saveDraft();
@@ -453,33 +495,181 @@
   }
   renderQuickColorBar();
 
-  function stampGlyphToCanvas(text, cx, cy, pxSize, tintHex) {
+  function compositeFloatingGlyph(buf, item, phaseIdx = 0) {
     const off = document.createElement("canvas");
     off.width = gridW; off.height = gridH;
     const octx = off.getContext("2d");
     octx.clearRect(0, 0, gridW, gridH);
+    const t = (phaseIdx % 8) / 8;
+    const ang = t * Math.PI * 2;
+    let dx = 0, dy = 0, scale = 1, rot = 0;
+    if (item.anim === "pulse") {
+      scale = 1 + 0.22 * Math.sin(ang);
+    } else if (item.anim === "bounce") {
+      dy = -Math.abs(Math.sin(ang)) * 7;
+      scale = 1 + 0.08 * Math.cos(ang * 2);
+    } else if (item.anim === "wiggle") {
+      rot = 0.28 * Math.sin(ang);
+      dx = 2 * Math.sin(ang);
+    } else if (item.anim === "float") {
+      dy = Math.sin(ang) * 5;
+      dx = Math.cos(ang) * 2;
+    } else if (item.anim === "spin") {
+      rot = ang;
+    } else if (item.anim === "sparkle") {
+      scale = 0.92 + 0.16 * Math.abs(Math.sin(ang * 2));
+      dy = Math.sin(ang * 2) * 2;
+    }
+    octx.save();
+    octx.translate(item.cx + dx, item.cy + dy);
+    if (rot) octx.rotate(rot);
+    if (scale !== 1) octx.scale(scale, scale);
     octx.textAlign = "center";
     octx.textBaseline = "middle";
-    octx.font = `bold ${pxSize}px -apple-system, "Apple Color Emoji", "Segoe UI Emoji", sans-serif`;
-    if (tintHex) octx.fillStyle = tintHex;
-    octx.fillText(text, cx, cy);
+    octx.font = `bold ${item.size}px -apple-system, "Apple Color Emoji", "Segoe UI Emoji", sans-serif`;
+    if (item.color) octx.fillStyle = item.color;
+    octx.fillText(item.text, 0, 0);
+    octx.restore();
+
+    if (item.anim === "sparkle" || item.anim === "float") {
+      const sparks = [[-14, -12], [15, -10], [-13, 13], [14, 12]];
+      const sp = sparks[phaseIdx % sparks.length];
+      octx.fillStyle = "#fde047";
+      octx.fillRect(Math.round(item.cx + sp[0]), Math.round(item.cy + sp[1]), 2, 2);
+      octx.fillStyle = "#38bdf8";
+      const sp2 = sparks[(phaseIdx + 2) % sparks.length];
+      octx.fillRect(Math.round(item.cx + sp2[0]), Math.round(item.cy + sp2[1]), 2, 2);
+    }
+
     const data = octx.getImageData(0, 0, gridW, gridH).data;
-    pushUndo();
-    const buf = frames[activeFrame];
-    for (let i = 0; i < gridW * gridH; i++) {
-      const a = data[i * 4 + 3];
-      if (a >= 95) {
-        buf[i * 3] = data[i * 4];
-        buf[i * 3 + 1] = data[i * 4 + 1];
-        buf[i * 3 + 2] = data[i * 4 + 2];
+    let minX = gridW, minY = gridH, maxX = 0, maxY = 0, hit = false;
+    for (let y = 0; y < gridH; y++) {
+      for (let x = 0; x < gridW; x++) {
+        const i = y * gridW + x;
+        if (data[i * 4 + 3] >= 90) {
+          buf[i * 3] = data[i * 4];
+          buf[i * 3 + 1] = data[i * 4 + 1];
+          buf[i * 3 + 2] = data[i * 4 + 2];
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+          hit = true;
+        }
       }
     }
-    renderCanvas(); renderFrameStrip(); saveDraft();
-    toast(`Stamped "${text}" on canvas`);
+    return hit ? { minX, minY, maxX, maxY } : { minX: Math.max(0, item.cx - 8), minY: Math.max(0, item.cy - 8), maxX: Math.min(gridW - 1, item.cx + 8), maxY: Math.min(gridH - 1, item.cy + 8) };
   }
+
+  function updateFloatingTimer() {
+    if (floatingTimer) { clearInterval(floatingTimer); floatingTimer = null; }
+    floatingPhase = 0;
+    if (floatingItem && floatingItem.anim !== "none") {
+      floatingTimer = setInterval(() => {
+        if (!floatingItem) { clearInterval(floatingTimer); floatingTimer = null; return; }
+        floatingPhase = (floatingPhase + 1) % 8;
+        renderCanvas();
+      }, 115);
+    }
+  }
+
+  function spawnFloatingItem(type, text, size, color, anim = "none") {
+    if (playTimer) { clearInterval(playTimer); playTimer = null; if ($("btnPlayAnim")) $("btnPlayAnim").textContent = "Play"; }
+    floatingItem = { type, text, cx: Math.floor(gridW / 2), cy: Math.floor(gridH / 2), size, color, anim };
+    if ($("floatingLabel")) $("floatingLabel").textContent = `Drag: ${text}`;
+    if ($("selFloatAnim")) $("selFloatAnim").value = anim;
+    if ($("floatingItemBar")) $("floatingItemBar").classList.remove("hidden");
+    updateFloatingTimer();
+    renderCanvas();
+    if (window.innerWidth <= 780 && $("canvasCard")) {
+      $("canvasCard").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    toast(`Drag "${text}" to position, then tap ✓ Place`);
+  }
+
+  function cancelFloatingItem() {
+    floatingItem = null;
+    isDraggingFloat = false;
+    updateFloatingTimer();
+    if ($("floatingItemBar")) $("floatingItemBar").classList.add("hidden");
+    renderCanvas();
+  }
+
+  function commitFloatingItem() {
+    if (!floatingItem) return;
+    const item = floatingItem;
+    floatingItem = null;
+    isDraggingFloat = false;
+    updateFloatingTimer();
+    if ($("floatingItemBar")) $("floatingItemBar").classList.add("hidden");
+
+    if (item.anim === "none") {
+      pushUndo();
+      compositeFloatingGlyph(frames[activeFrame], item, 0);
+      renderCanvas(); renderFrameStrip(); saveDraft();
+      toast(`Placed "${item.text}"`);
+    } else {
+      const total = frames.length > 1 ? frames.length : 8;
+      if (frames.length === 1) {
+        const base = frames[0];
+        frames = Array.from({ length: total }, () => new Uint8Array(base));
+      }
+      for (let f = 0; f < total; f++) {
+        compositeFloatingGlyph(frames[f], item, f);
+      }
+      activeFrame = 0;
+      if ($("gifDelay")) $("gifDelay").value = 110;
+      renderCanvas(); renderFrameStrip(); saveDraft();
+      // Auto-start preview so user immediately sees their animated artwork!
+      if (!playTimer) {
+        if ($("btnPlayAnim")) $("btnPlayAnim").textContent = "Stop";
+        playTimer = setInterval(() => {
+          activeFrame = (activeFrame + 1) % frames.length;
+          renderCanvas();
+        }, 110);
+      }
+      toast(`Animated "${item.text}" (${total} frames)! Tap Send Artwork to Display`);
+    }
+  }
+
+  if ($("btnFloatSmaller")) $("btnFloatSmaller").onclick = () => { if (!floatingItem) return; floatingItem.size = Math.max(10, floatingItem.size - 4); renderCanvas(); };
+  if ($("btnFloatBigger")) $("btnFloatBigger").onclick = () => { if (!floatingItem) return; floatingItem.size = Math.min(58, floatingItem.size + 4); renderCanvas(); };
+  if ($("selFloatAnim")) $("selFloatAnim").onchange = (e) => { if (!floatingItem) return; floatingItem.anim = e.target.value; updateFloatingTimer(); renderCanvas(); };
+  if ($("btnFloatCommit")) $("btnFloatCommit").onclick = commitFloatingItem;
+  if ($("btnFloatCancel")) $("btnFloatCancel").onclick = cancelFloatingItem;
+
+  function stampGlyphToCanvas(text, cx, cy, pxSize, tintHex) {
+    pushUndo();
+    compositeFloatingGlyph(frames[activeFrame], { type: tintHex ? "text" : "emoji", text, cx, cy, size: pxSize, color: tintHex, anim: "none" }, 0);
+    renderCanvas(); renderFrameStrip(); saveDraft();
+    toast(`Stamped "${text}"`);
+  }
+
+  const ANIM_EMOJI_PRESETS = [
+    { em: "❤️", label: "Beating Heart", anim: "pulse", size: 36 },
+    { em: "🔥", label: "Flicker Fire", anim: "bounce", size: 36 },
+    { em: "🚀", label: "Blast Rocket", anim: "float", size: 34 },
+    { em: "⭐", label: "Spinning Star", anim: "spin", size: 34 },
+    { em: "⚡", label: "Electric Bolt", anim: "sparkle", size: 34 },
+    { em: "😎", label: "Bouncing Cool", anim: "bounce", size: 34 },
+    { em: "🎉", label: "Party Wiggle", anim: "wiggle", size: 34 },
+    { em: "🌈", label: "Rainbow Wave", anim: "float", size: 34 },
+  ];
 
   const EMOJI_STAMPS = ["❤️", "🔥", "⭐", "⚡", "☕", "🎮", "🚀", "😎", "👾", "🎵", "🌙", "🌈", "💎", "🤖", "🐱", "🍕", "✅", "🎉", "💻", "🎧"];
   function initStampStudio() {
+    const aGrid = $("animEmojiGrid");
+    if (aGrid) {
+      aGrid.innerHTML = "";
+      ANIM_EMOJI_PRESETS.forEach((p) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "anim-emoji-btn";
+        b.innerHTML = `<span class="em">${p.em}</span><span>${p.label}</span>`;
+        b.onclick = () => spawnFloatingItem("emoji", p.em, p.size, null, p.anim);
+        aGrid.appendChild(b);
+      });
+    }
     const eGrid = $("emojiStampGrid");
     if (eGrid) {
       eGrid.innerHTML = "";
@@ -492,9 +682,9 @@
           activeStampEmoji = em;
           eGrid.querySelectorAll(".emoji-btn").forEach((x) => x.classList.toggle("active", x === b));
           if ($("chkTapPlace")?.checked) {
-            toast(`Tap anywhere on canvas to place ${em}`);
+            toast(`Tap anywhere on canvas to quick-stamp ${em}`);
           } else {
-            stampGlyphToCanvas(em, gridW / 2, gridH / 2 + 2, Number($("stampSize")?.value) || 36, null);
+            spawnFloatingItem("emoji", em, Number($("stampSize")?.value) || 32, null, "none");
           }
         };
         eGrid.appendChild(b);
@@ -504,8 +694,8 @@
       $("btnStampTextCenter").onclick = () => {
         const txt = ($("stampTextInput")?.value || "").trim();
         if (!txt) return toast("Type text first");
-        const sz = Math.min(34, Math.max(12, Math.round((Number($("stampSize")?.value) || 36) * 0.65)));
-        stampGlyphToCanvas(txt, gridW / 2, gridH / 2 + 1, sz, currentColor);
+        const sz = Math.min(34, Math.max(12, Math.round((Number($("stampSize")?.value) || 32) * 0.65)));
+        spawnFloatingItem("text", txt, sz, currentColor, "none");
       };
     }
 
@@ -654,6 +844,7 @@
   };
 
   async function sendCanvasToDisplay(asGif = false) {
+    if (floatingItem) commitFloatingItem();
     try {
       startTransferPoll();
       const endpoint = asGif || frames.length > 1 ? "/api/export_gif" : "/api/upload_frames";
