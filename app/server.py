@@ -558,8 +558,22 @@ async def handle_disconnect(_req: web.Request) -> web.Response:
         return web.json_response(state.status_dict())
 
 
-async def _ensure_exit_modal_mode() -> None:
-    """Exit built-in Clock / Countdown / Stopwatch / Scoreboard / Game mode before uploading programs (module 7e99)."""
+async def _ensure_exit_modal_mode(clear_temp_alert: bool = True) -> None:
+    """Exit built-in Clock / Countdown / Stopwatch / Scoreboard / Game mode and any active temporary alert (Slot 2) before uploading."""
+    if clear_temp_alert:
+        prev_task = getattr(state, "_notify_restore_task", None)
+        if prev_task and not prev_task.done():
+            prev_task.cancel()
+            state._notify_restore_task = None
+        if getattr(state, "_temp_alert_active", False) and state.transport and state.transport.is_connected:
+            try:
+                t = state.transport
+                await t.send_frame(cmd_delete_programs([2], sno=t.next_sno()))
+                await t.send_frame(cmd_dispatch_program(1, sno=t.next_sno()))
+                await t.send_frame(cmd_pgm_play(model=1, index=0, sno=t.next_sno()))
+            except Exception:
+                pass
+            state._temp_alert_active = False
     if state.in_modal_mode and state.transport and state.transport.is_connected:
         try:
             await state.transport.send_frame(cmd_game_action("exit", sno=state.transport.next_sno()))
@@ -2489,7 +2503,7 @@ async def _flash_temporary_gif(gif_bytes: bytes, label: str, duration_s: float =
     prev_bri = state.brightness
     async with state.lock:
         t = state.transport
-        await _ensure_exit_modal_mode()
+        await _ensure_exit_modal_mode(clear_temp_alert=False)
         if not state.power_on:
             await t.send_frame(cmd_set_power(True, sno=t.next_sno()))
             state.power_on = True
@@ -2500,22 +2514,28 @@ async def _flash_temporary_gif(gif_bytes: bytes, label: str, duration_s: float =
         )
         res = await t.send_frames(wire_frames, label=label)
         await t.send_frame(cmd_pgm_play(model=1, index=1, sno=t.next_sno()))
+        state._temp_alert_active = True
 
     async def _restore_slot1() -> None:
         try:
             await asyncio.sleep(max(1.0, float(duration_s)))
             if not state.transport or not state.transport.is_connected:
+                state._temp_alert_active = False
                 return
             async with state.lock:
+                if not getattr(state, "_temp_alert_active", False):
+                    return
                 t2 = state.transport
                 if brightness is not None:
                     await t2.send_frame(cmd_set_brightness(max(1, min(15, int(prev_bri))), sno=t2.next_sno()))
+                await t2.send_frame(cmd_delete_programs([2], sno=t2.next_sno()))
                 await t2.send_frame(cmd_dispatch_program(1, sno=t2.next_sno()))
                 await t2.send_frame(cmd_pgm_play(model=1, index=0, sno=t2.next_sno()))
+                state._temp_alert_active = False
         except asyncio.CancelledError:
             pass
         except Exception:
-            pass
+            state._temp_alert_active = False
 
     if duration_s > 0:
         state._notify_restore_task = asyncio.create_task(_restore_slot1())
@@ -2616,8 +2636,6 @@ async def _smart_watcher_loop() -> None:
         await asyncio.sleep(15.0)
         try:
             if not state.transport or not state.transport.is_connected:
-                continue
-            if getattr(state, "_context_override", None):
                 continue
             cfg = _load_smart_config()
             now_mono = time.monotonic()
