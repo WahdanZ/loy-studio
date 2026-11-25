@@ -1,0 +1,94 @@
+{
+  "enabled": true,
+  "rules": [
+    {
+      "id": "cr_prep",
+      "enabled": true,
+      "name": "Morning Coffee",
+      "days": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri"
+      ],
+      "start": "08:30",
+      "end": "10:00",
+      "kind": "gif",
+      "target": "13_mode_coffee_break.gif",
+      "brightness": 10
+    },
+    {
+      "id": "cr_air",
+      "enabled": true,
+      "name": "On Air / Recording",
+      "days": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri"
+      ],
+      "start": "10:00",
+      "end": "13:00",
+      "kind": "gif",
+      "target": "11_mode_on_air_meeting.gif",
+      "brightness": 14
+    },
+    {
+      "id": "cr_edit",
+      "enabled": true,
+      "name": "Deep Focus Edit",
+      "days": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri"
+      ],
+      "start": "13:00",
+      "end": "18:00",
+      "kind": "gif",
+      "target": "09_mode_deep_focus.gif",
+      "brightness": 12
+    },
+    {
+      "id": "cr_game",
+      "enabled": true,
+      "name": "Evening Gaming",
+      "days": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri",
+        "sat",
+        "sun"
+      ],
+      "start": "18:00",
+      "end": "23:00",
+      "kind": "gif",
+      "target": "15_mode_gaming_chill.gif",
+      "brightness": 11
+    },
+    {
+      "id": "cr_night",
+      "enabled": true,
+      "name": "Night / Done",
+      "days": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri",
+        "sat",
+        "sun"
+      ],
+      "start": "23:00",
+      "end": "08:30",
+      "kind": "gif",
+      "target": "18_mode_done_offline.gif",
+      "brightness": 2
+    }
+  ]
+}

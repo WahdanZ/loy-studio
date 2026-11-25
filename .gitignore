@@ -1,0 +1,15 @@
+# Do not commit proprietary binaries, decompiled code, captures, or local state
+original/
+decompiled/
+captures/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+app/local_library.json
+app/smart_config.json
+app/.pairing_token
+app/.last_device.json
+app/.loy_server.pid
+app/loy_server.log
+.DS_Store
