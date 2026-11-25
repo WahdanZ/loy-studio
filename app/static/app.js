@@ -364,45 +364,95 @@
 
   let lastDrawPos = null;
   let activeStampEmoji = null;
+  const activePointers = new Map(); // pointerId -> { clientX, clientY, startX, startY, x, y, lastPos, moved }
+  let pinchState = null; // { startDist, startSize, startCx, startCy, midCellX, midCellY }
+  let strokeStartTime = 0;
+  let maxTouchCount = 0;
 
-  // Prevent iOS Safari page scroll / rubber-band while finger-drawing on canvas
+  // Prevent iOS Safari page scroll / rubber-band / pinch-zoom while multi-touch drawing on canvas
   canvas.addEventListener("touchstart", (e) => { e.preventDefault(); }, { passive: false });
   canvas.addEventListener("touchmove", (e) => { e.preventDefault(); }, { passive: false });
+  canvas.addEventListener("gesturestart", (e) => { e.preventDefault(); }, { passive: false });
+
+  function getTwoPointers() {
+    const arr = Array.from(activePointers.values());
+    return arr.length >= 2 ? [arr[0], arr[1]] : null;
+  }
+
+  function startFloatPinch() {
+    const pair = getTwoPointers();
+    if (!pair || !floatingItem) { pinchState = null; return; }
+    const [p1, p2] = pair;
+    const dist = Math.max(10, Math.hypot(p2.clientX - p1.clientX, p2.clientY - p1.clientY));
+    pinchState = {
+      startDist: dist,
+      startSize: floatingItem.size,
+      startCx: floatingItem.cx,
+      startCy: floatingItem.cy,
+      midCellX: (p1.x + p2.x) / 2,
+      midCellY: (p1.y + p2.y) / 2,
+    };
+  }
 
   canvas.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
     const [x, y] = pointerToCell(e);
+    activePointers.set(e.pointerId, {
+      clientX: e.clientX, clientY: e.clientY,
+      startX: e.clientX, startY: e.clientY,
+      x, y, lastPos: [x, y], moved: false,
+    });
+    if (activePointers.size === 1) {
+      strokeStartTime = Date.now();
+      maxTouchCount = 1;
+    } else {
+      maxTouchCount = Math.max(maxTouchCount, activePointers.size);
+    }
+
     if (floatingItem) {
       isDraggingFloat = true;
-      floatDragOffset = [x - floatingItem.cx, y - floatingItem.cy];
+      if (activePointers.size === 1) {
+        pinchState = null;
+        floatDragOffset = [x - floatingItem.cx, y - floatingItem.cy];
+      } else if (activePointers.size === 2) {
+        startFloatPinch();
+      }
       return;
     }
+
     const buf = frames[activeFrame];
     if (currentTool === "picker") {
       const off = (y * gridW + x) * 3;
       setColor(rgbToHex(buf[off], buf[off + 1], buf[off + 2]));
       selectTool("pen");
+      activePointers.delete(e.pointerId);
       return;
     }
     if ($("chkTapPlace")?.checked && activeStampEmoji) {
       stampGlyphToCanvas(activeStampEmoji, x, y, Number($("stampSize")?.value) || 32, null);
+      activePointers.delete(e.pointerId);
       return;
     }
-    pushUndo();
-    isDrawing = true;
+    if (activePointers.size === 1) {
+      pushUndo();
+      isDrawing = true;
+    }
     lastDrawPos = [x, y];
     const rgb = currentTool === "eraser" ? [0, 0, 0] : hexToRgb(currentColor);
     if (currentTool === "fill") {
       const off = (y * gridW + x) * 3;
       floodFill(x, y, [buf[off], buf[off + 1], buf[off + 2]], rgb);
       isDrawing = false; lastDrawPos = null;
+      activePointers.clear();
       renderCanvas(); renderFrameStrip(); saveDraft();
       return;
     }
     if (["line", "rect", "circle"].includes(currentTool)) {
-      shapeStart = [x, y];
-      shapeSnapshot = new Uint8Array(buf);
+      if (activePointers.size === 1) {
+        shapeStart = [x, y];
+        shapeSnapshot = new Uint8Array(buf);
+      }
       return;
     }
     const pts = plotBrush(buf, x, y, rgb);
@@ -413,17 +463,38 @@
   });
 
   canvas.addEventListener("pointermove", (e) => {
-    if (isDraggingFloat && floatingItem) {
-      e.preventDefault();
-      const [x, y] = pointerToCell(e);
-      floatingItem.cx = Math.max(2, Math.min(gridW - 2, x - floatDragOffset[0]));
-      floatingItem.cy = Math.max(2, Math.min(gridH - 2, y - floatDragOffset[1]));
-      renderCanvas();
-      return;
-    }
-    if (!isDrawing) return;
+    const p = activePointers.get(e.pointerId);
+    if (!p) return;
     e.preventDefault();
     const [x, y] = pointerToCell(e);
+    p.clientX = e.clientX;
+    p.clientY = e.clientY;
+    if (Math.hypot(e.clientX - p.startX, e.clientY - p.startY) > 10) p.moved = true;
+    p.x = x;
+    p.y = y;
+
+    if (isDraggingFloat && floatingItem) {
+      if (activePointers.size >= 2 && pinchState) {
+        const pair = getTwoPointers();
+        if (pair) {
+          const [p1, p2] = pair;
+          const dist = Math.max(10, Math.hypot(p2.clientX - p1.clientX, p2.clientY - p1.clientY));
+          floatingItem.size = Math.max(10, Math.min(58, Math.round(pinchState.startSize * (dist / pinchState.startDist))));
+          const curMidX = (p1.x + p2.x) / 2;
+          const curMidY = (p1.y + p2.y) / 2;
+          floatingItem.cx = Math.max(2, Math.min(gridW - 2, Math.round(pinchState.startCx + (curMidX - pinchState.midCellX))));
+          floatingItem.cy = Math.max(2, Math.min(gridH - 2, Math.round(pinchState.startCy + (curMidY - pinchState.midCellY))));
+          renderCanvas();
+        }
+      } else if (activePointers.size === 1) {
+        floatingItem.cx = Math.max(2, Math.min(gridW - 2, x - floatDragOffset[0]));
+        floatingItem.cy = Math.max(2, Math.min(gridH - 2, y - floatDragOffset[1]));
+        renderCanvas();
+      }
+      return;
+    }
+
+    if (!isDrawing) return;
     const rgb = currentTool === "eraser" ? [0, 0, 0] : hexToRgb(currentColor);
     if (shapeStart && shapeSnapshot) {
       frames[activeFrame] = new Uint8Array(shapeSnapshot);
@@ -431,11 +502,12 @@
       renderCanvas();
       return;
     }
-    if (lastDrawPos && (lastDrawPos[0] !== x || lastDrawPos[1] !== y)) {
-      drawLine(frames[activeFrame], lastDrawPos[0], lastDrawPos[1], x, y, rgb);
+    if (p.lastPos && (p.lastPos[0] !== x || p.lastPos[1] !== y)) {
+      drawLine(frames[activeFrame], p.lastPos[0], p.lastPos[1], x, y, rgb);
     } else {
       plotBrush(frames[activeFrame], x, y, rgb);
     }
+    p.lastPos = [x, y];
     lastDrawPos = [x, y];
     if (connected && $("chkLiveDraw").checked) {
       api("/api/control", { method: "POST", body: JSON.stringify({ action: "rt_pixel", pixels: [[x, y]], color: rgbToHex(...rgb) }) }).catch(() => {});
@@ -443,10 +515,42 @@
     renderCanvas();
   });
 
-  function finishStroke() {
-    if (isDraggingFloat) { isDraggingFloat = false; return; }
+  function finishStroke(e) {
+    const ended = e ? activePointers.get(e.pointerId) : null;
+    const anyMoved = Array.from(activePointers.values()).some((pt) => pt.moved);
+    if (e) activePointers.delete(e.pointerId);
+    else activePointers.clear();
+
+    if (isDraggingFloat && floatingItem) {
+      if (activePointers.size === 1) {
+        // Seamless handoff from 2-finger pinch back to 1-finger drag
+        pinchState = null;
+        const rem = Array.from(activePointers.values())[0];
+        floatDragOffset = [rem.x - floatingItem.cx, rem.y - floatingItem.cy];
+      } else if (activePointers.size === 0) {
+        isDraggingFloat = false;
+        pinchState = null;
+      }
+      return;
+    }
+
+    if (activePointers.size > 0) return; // Other fingers still drawing!
     if (!isDrawing) return;
     isDrawing = false; shapeStart = null; shapeSnapshot = null; lastDrawPos = null;
+
+    // Procreate-style quick 2-finger tap = Undo (reverts the tap dots + undoes last stroke!)
+    if (maxTouchCount === 2 && !anyMoved && (Date.now() - strokeStartTime) < 260 && ended) {
+      if (undoStack.length) {
+        frames[activeFrame] = undoStack.pop(); // discard the 2-finger tap dots
+        if (undoStack.length) {
+          redoStack.push(new Uint8Array(frames[activeFrame]));
+          frames[activeFrame] = undoStack.pop(); // undo previous stroke
+          toast("2-finger Undo");
+        }
+        renderCanvas();
+      }
+    }
+    maxTouchCount = 0;
     renderFrameStrip(); saveDraft();
   }
   window.addEventListener("pointerup", finishStroke);
