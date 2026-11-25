@@ -45,4 +45,23 @@ else:
 cmd.append(str(ROOT / "desktop_app.py"))
 print("Running:", " ".join(cmd))
 subprocess.check_call(cmd, cwd=str(ROOT))
+
+if sys.platform == "darwin":
+    import plistlib
+
+    app_bundle = ROOT / "dist" / "LOY Studio.app"
+    plist_path = app_bundle / "Contents" / "Info.plist"
+    if plist_path.exists():
+        with plist_path.open("rb") as f:
+            plist = plistlib.load(f)
+        plist["NSBluetoothAlwaysUsageDescription"] = "LOY Studio uses Bluetooth LE to connect to your 64x64 LED pixel display."
+        plist["NSBluetoothPeripheralUsageDescription"] = "LOY Studio uses Bluetooth LE to connect to your 64x64 LED pixel display."
+        plist["NSLocalNetworkUsageDescription"] = "LOY Studio uses local Wi-Fi so your phone can control the LED display."
+        plist["CFBundleDisplayName"] = "LOY Studio"
+        plist["CFBundleIdentifier"] = "com.loystudio.desktop"
+        with plist_path.open("wb") as f:
+            plistlib.dump(plist, f)
+        subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app_bundle)], check=False)
+        print("Patched Info.plist with macOS Bluetooth & Local Network permissions.")
+
 print("\nBuild complete! Check dist/ for your portable LOY Studio app.")
