@@ -577,3 +577,16 @@ def test_now_playing_shows_catalog_label_not_filename():
         assert st2["now_playing"]["title"] == "Lunch"
         assert "19_mode_lunch" not in st2["now_playing"]["title"]
     run(body)
+
+
+def test_lan_ip_picker_ignores_vpn_tunnels():
+    picked = S._pick_best_lan_ip([
+        ("utun3", "10.10.4.21"),
+        ("utun4", "100.64.12.9"),
+        ("lo0", "127.0.0.1"),
+        ("en1", "169.254.10.2"),
+        ("en0", "192.168.1.42"),
+    ])
+    assert picked == "192.168.1.42"
+    # Still works if physical Wi-Fi itself is on a 10.0.0.x home router
+    assert S._pick_best_lan_ip([("utun0", "10.10.0.5"), ("en0", "10.0.0.15")]) == "10.0.0.15"

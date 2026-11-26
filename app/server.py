@@ -207,7 +207,7 @@ DEVICE_SCHEDULE_DISABLED_MSG = (
     "On-device schedules are turned off: on this display firmware they show the startup logo and "
     "disturb normal switching. Use the Mac schedule instead (it runs while LOY Studio is open)."
 )
-APP_VERSION = "4.4.2"
+APP_VERSION = "4.4.3"
 GITHUB_REPO = "WahdanZ/loy-studio"
 
 
@@ -250,13 +250,140 @@ DEFAULT_WORK_SCHEDULE: Dict[str, Any] = {
 }
 
 
-def _detect_lan_ip() -> str:
+_VPN_IFACE_PREFIXES = (
+    "lo", "utun", "tun", "tap", "ppp", "ipsec", "wg", "tailscale",
+    "zt", "awdl", "llw", "anpi", "bridge", "gif", "stf",
+    "vmnet", "veth", "docker", "br-", "virbr", "vboxnet",
+)
+
+
+def _is_usable_lan_ipv4(ip: str) -> bool:
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return False
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("10.255.255.255", 1))
-            return s.getsockname()[0]
-    except OSError:
-        return "127.0.0.1"
+        a, b, c, d = (int(p) for p in parts)
+    except ValueError:
+        return False
+    if not all(0 <= x <= 255 for x in (a, b, c, d)):
+        return False
+    if a in (0, 127):  # loopback / unspecified
+        return False
+    if a == 169 and b == 254:  # link-local
+        return False
+    if a == 100 and 64 <= b <= 127:  # CGNAT / Tailscale
+        return False
+    return True
+
+
+def _pick_best_lan_ip(candidates: List[tuple[str, str]]) -> Optional[str]:
+    """Pick the best physical LAN IPv4 from (iface_name, ip) pairs, skipping VPN/virtual tunnels."""
+    scored: List[tuple[int, str]] = []
+    for iface, ip in candidates:
+        name = iface.lower().strip()
+        if any(name.startswith(pfx) for pfx in _VPN_IFACE_PREFIXES):
+            continue
+        if not _is_usable_lan_ipv4(ip):
+            continue
+        # Lower score = higher priority
+        if name == "en0":
+            prio = 0
+        elif name.startswith(("en", "eth", "wlan", "wlp", "wl")):
+            prio = 10
+        else:
+            prio = 30
+        # Within same interface tier, prefer home/office LAN ranges (192.168.*, 172.16-31.*) over 10.*
+        if ip.startswith("192.168."):
+            prio += 0
+        elif ip.startswith("172.") and 16 <= int(ip.split(".")[1]) <= 31:
+            prio += 1
+        elif ip.startswith("10."):
+            prio += 2
+        else:
+            prio += 5
+        scored.append((prio, ip))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: item[0])
+    return scored[0][1]
+
+
+def _detect_lan_ip() -> str:
+    """Detect the real local Wi-Fi / Ethernet LAN IP, ignoring VPN tunnels (utun/tun/10.10.*)."""
+    candidates: List[tuple[str, str]] = []
+
+    if sys.platform == "darwin":
+        # 1. Fast path: macOS ipconfig for physical Wi-Fi / Ethernet interfaces (en0..en6)
+        for iface in ("en0", "en1", "en2", "en3", "en4", "en5", "en6"):
+            try:
+                out = subprocess.check_output(
+                    ["/usr/sbin/ipconfig", "getifaddr", iface],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                    timeout=1.0,
+                ).strip()
+                if out:
+                    candidates.append((iface, out))
+            except Exception:
+                continue
+        best = _pick_best_lan_ip(candidates)
+        if best:
+            return best
+        # 2. Fallback: parse ifconfig output excluding VPN/virtual interfaces
+        try:
+            out = subprocess.check_output(["/sbin/ifconfig"], text=True, stderr=subprocess.DEVNULL, timeout=1.5)
+            cur_iface = ""
+            for line in out.splitlines():
+                if line and not line[0].isspace() and ":" in line:
+                    cur_iface = line.split(":", 1)[0].strip()
+                elif cur_iface and "\tinet " in line:
+                    m = re.search(r"\binet (\d+\.\d+\.\d+\.\d+)\b", line)
+                    if m:
+                        candidates.append((cur_iface, m.group(1)))
+            best = _pick_best_lan_ip(candidates)
+            if best:
+                return best
+        except Exception:
+            pass
+    elif sys.platform.startswith("linux"):
+        try:
+            out = subprocess.check_output(
+                ["ip", "-4", "-o", "addr", "show", "scope", "global"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=1.5,
+            )
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 4:
+                    candidates.append((parts[1], parts[3].split("/", 1)[0]))
+            best = _pick_best_lan_ip(candidates)
+            if best:
+                return best
+        except Exception:
+            pass
+    else:
+        # Windows / generic: inspect local host addresses first
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                candidates.append(("lan", info[4][0]))
+            best = _pick_best_lan_ip(candidates)
+            if best:
+                return best
+        except OSError:
+            pass
+
+    # Final fallback: UDP route probe preferring 192.168.* over 10.* VPN routes
+    for target in ("192.168.255.255", "172.16.255.255", "10.255.255.255"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((target, 1))
+                ip = s.getsockname()[0]
+                if _is_usable_lan_ipv4(ip):
+                    return ip
+        except OSError:
+            continue
+    return "127.0.0.1"
 
 
 class ControllerState:
