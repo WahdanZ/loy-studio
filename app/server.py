@@ -186,10 +186,13 @@ LIVE_SLOTS = (1, 2)
 ALERT_SLOT = 3
 SCHEDULE_SLOTS = (4, 5, 6, 7, 8)
 BENCHMARK_SLOT = 9
-# Automatic refreshes (weather/calendar re-renders, auto-cycle, context switches, Mac
-# scheduler) are written to RAM so they do not wear out the panel's Flash. Anything the
-# user sends by hand persists to Flash so it survives a power cycle.
-AUTO_REFRESH_PERSIST = False
+# Live Slots 1<->2 MUST stay Flash (data_save=0), automatic refreshes included.
+# HARDWARE FINDING (EXYC-A V2.8.7, 2026-11-26): writing a RAM program (data_save=1) over a
+# slot that holds a Flash program leaves a dead entry in the panel's program list. Because
+# pgm_play(model=1, index) selects by LIST POSITION, every later switch then plays the
+# wrong program (or nothing) until the panel's programs are wiped. RAM is only safe for the
+# alert Slot 3, which is deleted before and after each alert.
+AUTO_REFRESH_PERSIST = True
 MAX_DIM = 128
 MAX_FRAMES = 120
 APP_VERSION = "4.3.3"
@@ -1093,7 +1096,9 @@ async def handle_control(req: web.Request) -> web.Response:
             elif action == "delete_all":
                 _cancel_alert_restore()
                 res = await t.send_frame(cmd_delete_all(sno=t.next_sno()))
-                state.active_slot = LIVE_SLOTS[0]
+                # Next upload must write Slot 1 first so list positions match slot ids
+                # (pgm_play selects by position): pretend Slot 2 is "visible".
+                state.active_slot = LIVE_SLOTS[1]
                 state.temp_alert_active = False
                 state.device_schedule_active = False
                 state.save_display_state()
@@ -2986,6 +2991,7 @@ async def _start_device_schedule_locked(t: Any) -> None:
     # that is on screen could flash the factory intro (zero-flicker rule).
     await t.send_frame(cmd_pgm_play(model=0, index=0, sno=t.next_sno()))
     await t.send_frame(cmd_delete_programs(list(LIVE_SLOTS), sno=t.next_sno()))
+    state.active_slot = LIVE_SLOTS[1]  # next manual upload re-creates Slot 1 first (position order)
     state.device_schedule_active = True
     state.save_display_state()
 
@@ -3247,6 +3253,10 @@ async def _flash_temporary_gif(
         if brightness is not None:
             await t.send_frame(cmd_set_brightness(max(1, min(15, int(brightness))), sno=t.next_sno()))
             state.alert_brightness_changed = True  # state.brightness keeps the level to restore
+        if not state.temp_alert_active:
+            # RAM over a Flash program corrupts the panel's program list (see AUTO_REFRESH_PERSIST),
+            # so clear Slot 3 (e.g. a leftover from an old on-device schedule) before writing to RAM.
+            await t.send_frame(cmd_delete_programs([ALERT_SLOT], sno=t.next_sno()))
         wire_frames = build_gif_program_frames(
             gif_bytes, state.width, state.height, program_id=ALERT_SLOT,
             start_sno=t.next_sno(), show_now=False, data_save=1,

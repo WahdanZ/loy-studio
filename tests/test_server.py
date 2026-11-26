@@ -170,17 +170,34 @@ def test_slot_invariants_uploads_alerts_and_rules():
     run(body)
 
 
-def test_automatic_refreshes_go_to_ram_and_manual_to_flash():
+def test_live_slots_are_always_flash_and_alerts_clear_slot3_first():
+    """Hardware finding: RAM over a Flash live slot corrupts the panel's position-based program list."""
+    assert S.AUTO_REFRESH_PERSIST is True
+
     async def body(c):
         panel = await _connect(c)
         await c.post("/api/gif_pack/send", json={"filename": "10_mode_coding.gif"})
-        assert panel.writes[-1]["ram"] is False  # user action persists
         await S._apply_schedule_rule(
             {"id": "a", "name": "auto", "kind": "gif", "target": "13_mode_coffee_break.gif"},
             persist=S.AUTO_REFRESH_PERSIST,
         )
-        assert panel.writes[-1]["ram"] is (not S.AUTO_REFRESH_PERSIST)
+        assert all(not w["ram"] for w in panel.writes if w["prog"] in LIVE)
+        before = len(panel.deleted)
+        await c.post("/api/notify", json={"title": "X", "duration_s": 30})
+        assert panel.deleted[before:] == [S.ALERT_SLOT]  # cleared before the RAM write
+        assert [w for w in panel.writes if w["ram"]] and all(w["prog"] == S.ALERT_SLOT for w in panel.writes if w["ram"])
         assert panel.violations == []
+    run(body)
+
+
+def test_after_wipe_slot1_is_written_first():
+    """pgm_play selects by list position, so after a wipe Slot 1 must be re-created before Slot 2."""
+    async def body(c):
+        await _connect(c)
+        await c.post("/api/gif_pack/send", json={"filename": "10_mode_coding.gif"})
+        await c.post("/api/control", json={"action": "delete_all"})
+        d = await (await c.post("/api/gif_pack/send", json={"filename": "11_mode_on_air_meeting.gif"})).json()
+        assert d["slot"] == S.LIVE_SLOTS[0]
     run(body)
 
 
