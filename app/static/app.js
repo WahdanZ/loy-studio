@@ -2334,6 +2334,66 @@
     }
   };
 
+  // ---------------- In-App Auto-Updater ----------------
+  async function checkForAppUpdate(silent = false) {
+    try {
+      const info = await api("/api/update/check");
+      if ($("updVersionBadge") && info.current_version) {
+        $("updVersionBadge").textContent = `v${info.current_version}`;
+      }
+      if (!info.ok) {
+        if ($("updStatusText")) $("updStatusText").textContent = info.error || "Unable to check updates.";
+        if (!silent) toast(info.error || "Update check failed");
+        return;
+      }
+      if (info.update_available) {
+        if ($("updStatusText")) $("updStatusText").textContent = `Update available: v${info.latest_version} (current v${info.current_version})`;
+        if ($("btnUpdApply")) $("btnUpdApply").classList.remove("hidden");
+        if ($("updateBannerText")) $("updateBannerText").textContent = `🚀 LOY Studio v${info.latest_version} is available!`;
+        if ($("updateBanner")) $("updateBanner").classList.remove("hidden");
+        if (!silent) toast(`Update v${info.latest_version} available!`);
+      } else {
+        if ($("updStatusText")) $("updStatusText").textContent = `Up to date (v${info.current_version} · latest v${info.latest_version})`;
+        if ($("btnUpdApply")) $("btnUpdApply").classList.add("hidden");
+        if (!silent) toast(`You are on the latest version (v${info.current_version})`);
+      }
+    } catch (err) {
+      if (!silent) toast(err.message);
+    }
+  }
+
+  async function applyAppUpdate() {
+    try {
+      toast("Downloading update & preparing restart...");
+      if ($("updStatusText")) $("updStatusText").textContent = "Downloading latest release... please wait (~10s).";
+      const res = await api("/api/update/apply", { method: "POST", body: "{}" });
+      if (res.mode === "browser" && res.release_url) {
+        window.open(res.release_url, "_blank");
+        toast(res.message || "Opened GitHub Release page");
+      } else if (res.restarting) {
+        toast(`Installing v${res.latest_version} — LOY Studio will relaunch in 3s!`);
+      }
+    } catch (err) {
+      toast(err.message);
+      if ($("updStatusText")) $("updStatusText").textContent = `Update failed: ${err.message}`;
+    }
+  }
+
+  if ($("btnUpdCheck")) $("btnUpdCheck").onclick = () => checkForAppUpdate(false);
+  if ($("btnUpdApply")) $("btnUpdApply").onclick = applyAppUpdate;
+  if ($("btnBannerUpdate")) $("btnBannerUpdate").onclick = applyAppUpdate;
+  if ($("btnBannerDismiss")) $("btnBannerDismiss").onclick = () => $("updateBanner")?.classList.add("hidden");
+  if ($("btnUpdSaveToken")) $("btnUpdSaveToken").onclick = async () => {
+    try {
+      const tok = ($("updTokenInput")?.value || "").trim();
+      await api("/api/update/token", { method: "POST", body: JSON.stringify({ token: tok }) });
+      if ($("updTokenInput")) $("updTokenInput").value = "";
+      toast(tok ? "GitHub token saved — checking updates..." : "GitHub token cleared");
+      if (tok) checkForAppUpdate(false);
+    } catch (err) { toast(err.message); }
+  };
+  setTimeout(() => checkForAppUpdate(true), 2500);
+
   let ws = null;
   let wsRetryTimer = null;
   function connectWebSocket() {

@@ -9,6 +9,7 @@ __pycache__/
 app/local_library.json
 app/smart_config.json
 app/.lan_auth.json
+app/.github_token
 app/.pairing_token
 app/.last_device.json
 app/.loy_server.pid

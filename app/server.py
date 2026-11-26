@@ -16,12 +16,18 @@ import hashlib
 import io
 import json
 import math
+import os
+import re
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Set
@@ -129,6 +135,9 @@ LAST_DEVICE_FILE = DATA_DIR / ".last_device.json"
 SCHEDULE_FILE = DATA_DIR / "work_schedule.json"
 SMART_CONFIG_FILE = DATA_DIR / "smart_config.json"
 LAN_AUTH_FILE = DATA_DIR / ".lan_auth.json"
+GH_TOKEN_FILE = DATA_DIR / ".github_token"
+APP_VERSION = "4.3.0"
+GITHUB_REPO = "WahdanZ/loy-studio"
 
 
 def _hash_password(password: str, salt: str) -> str:
@@ -347,6 +356,7 @@ class ControllerState:
         cfg = _load_smart_config() if SMART_CONFIG_FILE.exists() else DEFAULT_SMART_CONFIG
         return {
             "connected": bool(self.transport and self.transport.is_connected),
+            "app_version": APP_VERSION,
             "mode": self.mode,
             "address": self.address,
             "device_name": self.device_name,
@@ -2874,6 +2884,186 @@ async def handle_auto_cycle(req: web.Request) -> web.Response:
     return web.json_response({"ok": True, "auto_cycle_enabled": enabled})
 
 
+# ---------------------------------------------------------------------------
+# In-App Self-Updater (GitHub Releases — supports public & private repos)
+# ---------------------------------------------------------------------------
+
+def _parse_semver(v: str) -> tuple[int, ...]:
+    nums = [int(p) for p in re.findall(r"\d+", str(v or "0"))]
+    return tuple(nums[:3] + [0] * max(0, 3 - len(nums)))
+
+
+def _get_github_token() -> str:
+    if GH_TOKEN_FILE.exists():
+        try:
+            tok = GH_TOKEN_FILE.read_text(encoding="utf-8").strip()
+            if tok:
+                return tok
+        except Exception:
+            pass
+    env_tok = (os.environ.get("LOY_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if env_tok:
+        return env_tok
+    try:
+        out = subprocess.check_output(["gh", "auth", "token"], text=True, stderr=subprocess.DEVNULL, timeout=2.0).strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    return ""
+
+
+def _check_github_update() -> Dict[str, Any]:
+    from app.smart_features import _build_ssl_context
+
+    tok = _get_github_token()
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": f"LOY-Studio/{APP_VERSION}"}
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=8, context=_build_ssl_context()) as r:
+            rel = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403, 404):
+            return {
+                "ok": False,
+                "current_version": APP_VERSION,
+                "auth_needed": True,
+                "error": "Private repo: add a read-only GitHub token in Device → App Updates (or sign in via gh CLI).",
+            }
+        raise
+
+    tag = str(rel.get("tag_name") or "").lstrip("vV")
+    assets = rel.get("assets") or []
+    want = "macOS" if sys.platform == "darwin" else ("Windows" if sys.platform == "win32" else "Linux")
+    chosen = next((a for a in assets if want.lower() in str(a.get("name", "")).lower()), None)
+    return {
+        "ok": True,
+        "current_version": APP_VERSION,
+        "latest_version": tag,
+        "update_available": _parse_semver(tag) > _parse_semver(APP_VERSION),
+        "release_url": rel.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases",
+        "release_notes": (rel.get("body") or "")[:600],
+        "asset_name": chosen.get("name") if chosen else None,
+        "asset_api_url": chosen.get("url") if chosen else None,
+        "asset_download_url": chosen.get("browser_download_url") if chosen else None,
+        "is_portable": bool(getattr(sys, "frozen", False)),
+        "has_token": bool(tok),
+    }
+
+
+async def handle_update_check(_req: web.Request) -> web.Response:
+    try:
+        info = await asyncio.to_thread(_check_github_update)
+        return web.json_response(info)
+    except Exception as exc:
+        return web.json_response({"ok": False, "current_version": APP_VERSION, "error": str(exc)}, status=500)
+
+
+async def handle_update_token(req: web.Request) -> web.Response:
+    body = await req.json()
+    tok = str(body.get("token") or "").strip()
+    if tok:
+        GH_TOKEN_FILE.write_text(tok, encoding="utf-8")
+        try:
+            GH_TOKEN_FILE.chmod(0o600)
+        except OSError:
+            pass
+    else:
+        GH_TOKEN_FILE.unlink(missing_ok=True)
+    return web.json_response({"ok": True, "has_token": bool(tok)})
+
+
+async def handle_update_apply(_req: web.Request) -> web.Response:
+    from app.smart_features import _build_ssl_context
+
+    info = await asyncio.to_thread(_check_github_update)
+    if not info.get("ok"):
+        return web.json_response(info, status=400)
+    asset_url = info.get("asset_api_url") or info.get("asset_download_url")
+    if not asset_url:
+        return web.json_response({"error": "No matching portable asset found for this OS"}, status=404)
+
+    if not getattr(sys, "frozen", False):
+        return web.json_response({
+            "ok": True,
+            "mode": "browser",
+            "release_url": info["release_url"],
+            "message": "Running from source — open the Release URL or run git pull.",
+        })
+
+    tok = _get_github_token()
+    tmp_dir = Path(tempfile.mkdtemp(prefix="loy_update_"))
+    zip_path = tmp_dir / (info.get("asset_name") or "update.zip")
+
+    def _download_zip() -> None:
+        headers = {"Accept": "application/octet-stream", "User-Agent": f"LOY-Studio/{APP_VERSION}"}
+        if tok:
+            headers["Authorization"] = f"Bearer {tok}"
+        req = urllib.request.Request(asset_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=60, context=_build_ssl_context()) as r, zip_path.open("wb") as out:
+            shutil.copyfileobj(r, out)
+
+    await asyncio.to_thread(_download_zip)
+
+    # Gracefully disconnect BLE before swapping and restarting
+    if state.transport and state.transport.is_connected:
+        try:
+            await state.transport.disconnect()
+        except Exception:
+            pass
+
+    if sys.platform == "darwin":
+        exe_path = Path(sys.executable).resolve()
+        app_bundle = next((p for p in exe_path.parents if p.suffix == ".app"), None)
+        if not app_bundle:
+            return web.json_response({"error": "Could not locate .app bundle path"}, status=500)
+        extract_dir = tmp_dir / "extracted"
+        extract_dir.mkdir(exist_ok=True)
+        subprocess.check_call(["ditto", "-x", "-k", str(zip_path), str(extract_dir)])
+        new_app = next(extract_dir.glob("*.app"), None)
+        if not new_app:
+            return web.json_response({"error": "Downloaded archive did not contain a .app bundle"}, status=500)
+        swap_sh = tmp_dir / "swap.sh"
+        swap_sh.write_text(
+            f"#!/bin/sh\n"
+            f"sleep 1.5\n"
+            f"rm -rf \"{app_bundle}\"\n"
+            f"mv \"{new_app}\" \"{app_bundle}\"\n"
+            f"xattr -dr com.apple.quarantine \"{app_bundle}\" 2>/dev/null || true\n"
+            f"open -a \"{app_bundle}\"\n"
+            f"rm -rf \"{tmp_dir}\"\n",
+            encoding="utf-8",
+        )
+        swap_sh.chmod(0o755)
+        subprocess.Popen(["/bin/sh", str(swap_sh)], start_new_session=True)
+    elif sys.platform == "win32":
+        import zipfile
+
+        exe_path = Path(sys.executable).resolve()
+        extract_dir = tmp_dir / "extracted"
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_dir)
+        new_exe = next(extract_dir.glob("*.exe"), None)
+        if not new_exe:
+            return web.json_response({"error": "Downloaded archive did not contain an .exe"}, status=500)
+        bat = tmp_dir / "swap.bat"
+        bat.write_text(
+            f"@echo off\r\n"
+            f"timeout /t 2 /nobreak >nul\r\n"
+            f"move /y \"{new_exe}\" \"{exe_path}\"\r\n"
+            f"start \"\" \"{exe_path}\"\r\n",
+            encoding="utf-8",
+        )
+        subprocess.Popen(["cmd", "/c", str(bat)], creationflags=0x00000008)
+
+    # Exit shortly after returning HTTP 200 so the swap script replaces & relaunches cleanly
+    asyncio.get_running_loop().call_later(0.6, lambda: os._exit(0))
+    return web.json_response({"ok": True, "restarting": True, "latest_version": info["latest_version"]})
+
+
 async def handle_calendars_list(req: web.Request) -> web.Response:
     req_access = req.query.get("request", "0") in ("1", "true", "yes")
     cals = await asyncio.to_thread(list_macos_calendars, request_access=req_access)
@@ -3116,6 +3306,9 @@ def create_app() -> web.Application:
     app.router.add_post("/api/calendar_clock", handle_calendar_clock)
     app.router.add_post("/api/auto_cycle", handle_auto_cycle)
     app.router.add_get("/api/calendars", handle_calendars_list)
+    app.router.add_get("/api/update/check", handle_update_check)
+    app.router.add_post("/api/update/token", handle_update_token)
+    app.router.add_post("/api/update/apply", handle_update_apply)
     app.router.add_get("/api/smart_config", handle_smart_config)
     app.router.add_post("/api/smart_config", handle_smart_config)
     return app

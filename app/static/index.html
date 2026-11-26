@@ -10,7 +10,7 @@
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <title>LOY Studio — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=20" />
+  <link rel="stylesheet" href="/static/style.css?v=21" />
 </head>
 <body>
   <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
@@ -100,6 +100,15 @@
           <button id="btnTopSend" class="btn sm primary desk-only"><svg class="ico sm"><use href="#i-send"/></svg> Send Canvas</button>
         </div>
       </header>
+
+      <!-- In-App Update Available Banner -->
+      <div id="updateBanner" class="transfer-bar hidden" style="background:rgba(59,130,246,0.18);border-color:rgba(96,165,250,0.45);">
+        <span id="updateBannerText">New LOY Studio update available!</span>
+        <div class="inline" style="gap:6px;margin-left:auto;">
+          <button id="btnBannerUpdate" class="btn sm primary">⬇️ Update &amp; Restart</button>
+          <button id="btnBannerDismiss" class="btn sm">Later</button>
+        </div>
+      </div>
 
       <!-- Server Offline Banner -->
       <div id="offlineBanner" class="transfer-bar hidden" style="background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.35);">
@@ -938,6 +947,22 @@
           </div>
         </div>
 
+        <div class="card" style="margin-bottom:14px;">
+          <div class="card-header">
+            <h2><svg class="ico"><use href="#i-refresh"/></svg> In-App Updates (GitHub Releases)</h2>
+            <span id="updVersionBadge" class="badge blue">v4.3.0</span>
+          </div>
+          <div id="updStatusText" class="muted" style="font-size:12.5px;">Checks WahdanZ/loy-studio Releases and updates LOY Studio.app automatically.</div>
+          <div class="inline">
+            <button id="btnUpdCheck" class="btn sm">Check for Updates</button>
+            <button id="btnUpdApply" class="btn sm primary hidden">⬇️ Download, Install &amp; Restart</button>
+          </div>
+          <div class="inline" style="padding-top:6px;border-top:1px solid var(--border);">
+            <input id="updTokenInput" type="password" placeholder="Optional GitHub Token (for private repo updates)" style="flex:1;" />
+            <button id="btnUpdSaveToken" class="btn sm">Save Token</button>
+          </div>
+        </div>
+
         <details class="card">
           <summary style="cursor:pointer;font-weight:600;font-size:14px;">Developer Mode &amp; Packet Diagnostics</summary>
           <div style="margin-top:14px;display:flex;flex-direction:column;gap:12px;">
@@ -981,6 +1006,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=20"></script>
+  <script src="/static/app.js?v=21"></script>
 </body>
 </html>
