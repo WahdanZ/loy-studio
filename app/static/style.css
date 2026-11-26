@@ -35,7 +35,7 @@ html, body {
   font-size: 14px;
   line-height: 1.46;
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 .no-scrollbar::-webkit-scrollbar { display: none; }
@@ -509,14 +509,14 @@ input[type="color"] {
 .pin-desc { font-size: 11px; color: var(--text-secondary); }
 
 .mood-shelf {
-  display: flex;
-  gap: 10px;
-  overflow-x: auto;
-  padding-bottom: 4px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 9px;
 }
 .mood-shelf .quick-mode-btn {
-  width: 106px;
-  flex-shrink: 0;
+  width: 100%;
+  min-width: 0;
+  text-align: center;
 }
 
 .canvas-opts-drawer {
@@ -916,30 +916,32 @@ input[type="color"] {
 .pkt-row.TX { border-left: 3px solid var(--accent); }
 .pkt-row.RX { border-left: 3px solid var(--green); }
 
-/* Floating 5-Tab iOS Glass Dock (Mobile Only!) */
+/* Floating 5-Tab Centered iOS Glass Dock (Mobile & Compact Window Only!) */
 .mobile-dock {
   display: none;
   position: fixed;
   bottom: calc(10px + env(safe-area-inset-bottom));
-  left: 12px;
-  right: 12px;
-  height: 62px;
+  left: 14px;
+  right: 14px;
+  max-width: 480px;
+  margin: 0 auto;
+  height: 60px;
   border-radius: 22px;
   background: rgba(18, 21, 32, 0.92);
   backdrop-filter: blur(22px);
   -webkit-backdrop-filter: blur(22px);
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 14px 38px rgba(0, 0, 0, 0.72);
-  padding: 0 8px;
+  padding: 0 6px;
   z-index: 50;
-  align-items: center;
-  justify-content: space-around;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  place-items: center;
 }
 .mobile-dock .dock-item {
   background: none; border: none; color: var(--text-secondary);
   font-family: inherit; font-size: 10.5px; font-weight: 600;
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 6px 10px; cursor: pointer; border-radius: 12px;
+  padding: 6px 4px; cursor: pointer; border-radius: 12px; width: 100%;
   transition: color 0.15s;
 }
 .mobile-dock .dock-item.active { color: #60a5fa; }
@@ -1048,10 +1050,10 @@ input[type="color"] {
   .sidebar { display: none; }
   .brand-mark.mob-only { display: grid; }
   .desk-only { display: none !important; }
-  .mobile-dock { display: flex; }
+  .mobile-dock { display: grid; }
   .main-area { min-width: 0; padding-bottom: calc(116px + env(safe-area-inset-bottom)); }
   .topbar { padding: calc(10px + env(safe-area-inset-top)) 14px 10px; }
-  .workspace { padding: 12px; max-width: 100vw; overflow-x: hidden; }
+  .workspace { padding: 12px; max-width: 100vw; overflow-x: clip; }
   .card { padding: 14px; border-radius: 18px; }
   .grid-2, .grid-3, .phone-pair-grid { grid-template-columns: minmax(0, 1fr); }
   #pixelCanvas { width: min(100%, 340px); }
