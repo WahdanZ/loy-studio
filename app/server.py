@@ -195,6 +195,16 @@ BENCHMARK_SLOT = 9
 AUTO_REFRESH_PERSIST = True
 MAX_DIM = 128
 MAX_FRAMES = 120
+# On-device Flash schedules (TLV 0x16) are OFF by default. HARDWARE FINDING (EXYC-A V2.8.7,
+# 2026-11-26): after flashing two GIF programs with PERIOD_PRO and switching to sequence
+# playback, the panel showed its factory logo during an active window, and afterwards
+# Slot 2 switching stayed broken even after delete_all and a power cycle. Opt in with
+# LOY_EXPERIMENTAL_DEVICE_SCHEDULE=1 only for protocol research.
+DEVICE_SCHEDULE_ENABLED = os.environ.get("LOY_EXPERIMENTAL_DEVICE_SCHEDULE", "").strip() == "1"
+DEVICE_SCHEDULE_DISABLED_MSG = (
+    "On-device schedules are turned off: on this display firmware they show the startup logo and "
+    "disturb normal switching. Use the Mac schedule instead (it runs while LOY Studio is open)."
+)
 APP_VERSION = "4.3.3"
 GITHUB_REPO = "WahdanZ/loy-studio"
 
@@ -2897,8 +2907,10 @@ async def handle_work_schedule_flash_device(req: web.Request) -> web.Response:
     POST /api/work_schedule/flash_device — store enabled schedule rules in the display's
     on-board Flash (Slots 4..8) with TLV 0x16 (PERIOD_PRO) windows, so the panel switches
     on its own RTC even with the Mac offline. Live content (Slots 1-2) and alerts (Slot 3)
-    never overlap these slots.
+    never overlap these slots. Disabled unless DEVICE_SCHEDULE_ENABLED (see its comment).
     """
+    if not DEVICE_SCHEDULE_ENABLED:
+        return web.json_response({"error": DEVICE_SCHEDULE_DISABLED_MSG, "disabled": True}, status=409)
     body = await req.json() if req.body_exists else {}
     start_date = str(body.get("start_date") or datetime.date.today().isoformat()).strip()
     end_date = str(body.get("end_date") or "2099-12-31").strip()
@@ -3001,6 +3013,8 @@ async def handle_work_schedule_device_mode(req: web.Request) -> web.Response:
     {"action": "stop"} deletes it from the panel and returns control to the Mac scheduler."""
     body = await req.json()
     action = str(body.get("action", ""))
+    if action == "resume" and not DEVICE_SCHEDULE_ENABLED:
+        return web.json_response({"error": DEVICE_SCHEDULE_DISABLED_MSG, "disabled": True}, status=409)
     sched = _load_work_schedule()
     try:
         _require_transport()

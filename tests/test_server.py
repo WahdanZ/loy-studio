@@ -388,7 +388,24 @@ def test_malformed_rules_rejected_and_never_break_status():
     run(body)
 
 
-def test_flash_device_uses_schedule_slots_and_survives_live_uploads():
+def test_device_schedule_is_off_by_default():
+    """Hardware finding: on-device schedules show the logo and disturb switching on EXYC-A."""
+    assert S.DEVICE_SCHEDULE_ENABLED is False
+
+    async def body(c):
+        await _connect(c)
+        r = await c.post("/api/work_schedule/flash_device", json={})
+        assert r.status == 409 and (await r.json())["disabled"]
+        r = await c.post("/api/work_schedule/device_mode", json={"action": "resume"})
+        assert r.status == 409
+        # "stop" stays available to clean up panels flashed by older versions
+        assert (await c.post("/api/work_schedule/device_mode", json={"action": "stop"})).status == 200
+    run(body)
+
+
+def test_flash_device_uses_schedule_slots_and_survives_live_uploads(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(S, "DEVICE_SCHEDULE_ENABLED", True)  # experimental opt-in
+
     async def body(c):
         panel = await _connect(c)
         await c.post("/api/gif_pack/send", json={"filename": "10_mode_coding.gif"})
