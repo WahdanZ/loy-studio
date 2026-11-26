@@ -1989,6 +1989,8 @@
         $("ctxIdle").checked = Boolean(config.auto_idle_brb);
         $("ctxIdleMin").value = config.idle_minutes ?? 5;
         $("ctxCal").checked = Boolean(config.calendar_alerts);
+        if ($("ctxCalClock")) $("ctxCalClock").checked = Boolean(config.calendar_clock_enabled);
+        if ($("ctxCalIcs")) $("ctxCalIcs").value = config.calendar_ics_url || "";
         $("wxCity").value = config.weather_city || "Berlin";
         $("wxAuto").checked = Boolean(config.weather_enabled);
         $("hydEnabled").checked = Boolean(config.hydration_enabled);
@@ -1996,6 +1998,12 @@
       }
       if ($("macCtxReadout") && context) {
         $("macCtxReadout").textContent = `App: ${context.front_app || "—"} · Call: ${context.in_call ? "ON AIR 🔴" : "No"} · Idle: ${context.idle_seconds}s${active_override ? ` · Override: ${active_override}` : ""}`;
+      }
+      if ($("ctxCalReadout") && context) {
+        const ev = context.next_event;
+        $("ctxCalReadout").textContent = ev
+          ? `Next (${ev.source || "cal"}): ${ev.title} in ${ev.minutes_left}m`
+          : (config.calendar_alerts || config.calendar_clock_enabled ? "Calendar synced · No meetings in next 2h" : "Uses macOS EventKit or optional .ics URL below");
       }
       if ($("wxReadout") && weather_cache) {
         $("wxReadout").textContent = `Last: ${weather_cache.city} · ${weather_cache.temp_c}°C (${weather_cache.kind})`;
@@ -2015,6 +2023,8 @@
           auto_idle_brb: $("ctxIdle").checked,
           idle_minutes: Number($("ctxIdleMin").value) || 5,
           calendar_alerts: $("ctxCal").checked,
+          calendar_clock_enabled: Boolean($("ctxCalClock")?.checked),
+          calendar_ics_url: ($("ctxCalIcs")?.value || "").trim(),
           weather_enabled: $("wxAuto").checked,
           weather_city: $("wxCity").value.trim() || "Berlin",
           hydration_enabled: $("hydEnabled").checked,
@@ -2026,9 +2036,17 @@
     } catch (err) { toast(err.message); }
   }
 
-  ["ctxEnabled", "ctxOnAir", "ctxCoding", "ctxIdle", "ctxIdleMin", "ctxCal", "wxAuto", "hydEnabled", "hydMin"].forEach((id) => {
+  ["ctxEnabled", "ctxOnAir", "ctxCoding", "ctxIdle", "ctxIdleMin", "ctxCal", "ctxCalClock", "ctxCalIcs", "wxAuto", "hydEnabled", "hydMin"].forEach((id) => {
     if ($(id)) $(id).onchange = saveSmartConfig;
   });
+  if ($("btnCalClockSend")) $("btnCalClockSend").onclick = async () => {
+    try {
+      const res = await api("/api/calendar_clock", { method: "POST", body: JSON.stringify({ ics_url: ($("ctxCalIcs")?.value || "").trim() }) });
+      const ev = res.event;
+      if ($("ctxCalReadout")) $("ctxCalReadout").textContent = ev ? `Live: ${ev.title} in ${ev.minutes_left}m` : "Live: No meetings today (Free)";
+      toast(ev ? `Calendar Clock sent: ${ev.title} (${ev.minutes_left}m)` : "Calendar Clock sent (No upcoming meetings)");
+    } catch (err) { toast(err.message); }
+  };
   if ($("btnWxSend")) $("btnWxSend").onclick = async () => {
     try {
       const res = await api("/api/weather_clock", { method: "POST", body: JSON.stringify({ city: $("wxCity").value.trim() || "Berlin" }) });

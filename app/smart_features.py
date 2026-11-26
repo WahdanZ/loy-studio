@@ -164,38 +164,160 @@ def get_macos_frontmost_app() -> str:
         return ""
 
 
-_cal_cache: Dict[str, Any] = {"ts": 0.0, "event": None}
+_cal_cache: Dict[str, Any] = {"ts": 0.0, "key": "", "event": None}
+
+_ICS_WEEKDAYS = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
 
 
-def get_upcoming_calendar_event(within_minutes: int = 15) -> Optional[Dict[str, Any]]:
-    """Query local macOS Calendar.app for an event starting within `within_minutes` (cached 120s)."""
-    now = time.time()
-    if now - _cal_cache["ts"] < 120:
-        return _cal_cache["event"]
-    script = f'''
-    set nowDate to current date
-    set endDate to nowDate + ({int(within_minutes)} * minutes)
-    tell application "Calendar"
-        repeat with cal in calendars
-            set evs to (every event of cal whose start date ≥ nowDate and start date ≤ endDate)
-            if (count of evs) > 0 then
-                set ev to item 1 of evs
-                set minsLeft to round (((start date of ev) - nowDate) / 60)
-                return (summary of ev) & "||" & (minsLeft as string)
-            end if
-        end repeat
-    end tell
-    return ""
-    '''
-    event = None
+def _parse_ics_dt(raw: str) -> Optional[datetime.datetime]:
+    """Parse an ICS DTSTART value (YYYYMMDDTHHMMSS[Z]) into local naive datetime."""
+    val = raw.strip()
+    if len(val) < 15 or "T" not in val:
+        return None
     try:
-        out = subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.DEVNULL, timeout=2.5).strip()
+        if val.endswith("Z"):
+            utc_dt = datetime.datetime.strptime(val[:15], "%Y%m%dT%H%M%S").replace(tzinfo=datetime.timezone.utc)
+            return utc_dt.astimezone().replace(tzinfo=None)
+        return datetime.datetime.strptime(val[:15], "%Y%m%dT%H%M%S")
+    except Exception:
+        return None
+
+
+def _fetch_upcoming_ics_event(ics_url: str, within_minutes: int = 120) -> Optional[Dict[str, Any]]:
+    """Fetch a standard .ics calendar feed (Google / Outlook / Apple) and find the next meeting."""
+    ctx = _build_ssl_context()
+    req = urllib.request.Request(ics_url.strip(), headers={"User-Agent": "LOY-Studio/3.0"})
+    with urllib.request.urlopen(req, timeout=8, context=ctx) as r:
+        raw_text = r.read().decode("utf-8", errors="replace")
+
+    # Unfold folded ICS lines (RFC 5545)
+    unfolded = re.sub(r"\r?\n[ \t]", "", raw_text)
+    now = datetime.datetime.now()
+    horizon = now + datetime.timedelta(minutes=max(15, int(within_minutes)))
+    best: Optional[Tuple[int, str]] = None
+
+    for block in unfolded.split("BEGIN:VEVENT")[1:]:
+        body = block.split("END:VEVENT", 1)[0]
+        summary = ""
+        dtstart: Optional[datetime.datetime] = None
+        rrule = ""
+        for line in body.splitlines():
+            if line.startswith("SUMMARY:"):
+                summary = line[8:].strip().replace("\\,", ",").replace("\\n", " ")
+            elif line.startswith("DTSTART"):
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    dtstart = _parse_ics_dt(parts[1])
+            elif line.startswith("RRULE:"):
+                rrule = line[6:].strip().upper()
+        if not dtstart or not summary:
+            continue
+
+        occ = dtstart
+        if occ < now and rrule:
+            # Handle common recurring meetings (DAILY / WEEKLY)
+            if "FREQ=DAILY" in rrule:
+                occ = datetime.datetime.combine(now.date(), dtstart.time())
+                if occ < now - datetime.timedelta(minutes=1):
+                    occ += datetime.timedelta(days=1)
+            elif "FREQ=WEEKLY" in rrule:
+                m_by = re.search(r"BYDAY=([A-Z,]+)", rrule)
+                days = [_ICS_WEEKDAYS[d] for d in m_by.group(1).split(",") if d in _ICS_WEEKDAYS] if m_by else [dtstart.weekday()]
+                if now.weekday() in days:
+                    occ = datetime.datetime.combine(now.date(), dtstart.time())
+        if now - datetime.timedelta(minutes=1) <= occ <= horizon:
+            mins_left = max(0, int(round((occ - now).total_seconds() / 60.0)))
+            if best is None or mins_left < best[0]:
+                best = (mins_left, summary[:24])
+
+    if best is None:
+        return None
+    return {"title": best[1], "minutes_left": best[0], "source": "ics"}
+
+
+def _get_macos_eventkit_event(within_minutes: int = 120) -> Optional[Dict[str, Any]]:
+    """Fast native macOS EventKit query via JXA (handles recurring meetings & all synced accounts)."""
+    jxa = f'''
+ObjC.import("EventKit");
+ObjC.import("Foundation");
+var store = $.EKEventStore.alloc.init;
+var now = $.NSDate.date;
+var end = now.dateByAddingTimeInterval({int(within_minutes) * 60});
+var pred = store.predicateForEventsWithStartDateEndDateCalendars(now, end, $());
+var evs = store.eventsMatchingPredicate(pred);
+var bestMins = 999999;
+var bestTitle = "";
+if (evs && evs.count > 0) {{
+  for (var i = 0; i < evs.count; i++) {{
+    var ev = evs.objectAtIndex(i);
+    if (ev.isAllDay) continue;
+    var diff = ev.startDate.timeIntervalSinceDate(now);
+    if (diff >= -60 && diff <= {int(within_minutes) * 60}) {{
+      var mins = Math.max(0, Math.round(diff / 60));
+      if (mins < bestMins) {{
+        bestMins = mins;
+        bestTitle = ObjC.unwrap(ev.title) || "Meeting";
+      }}
+    }}
+  }}
+}}
+bestTitle ? (bestTitle + "||" + bestMins) : "";
+'''
+    try:
+        out = subprocess.check_output(
+            ["osascript", "-l", "JavaScript", "-e", jxa],
+            text=True, stderr=subprocess.DEVNULL, timeout=4.0,
+        ).strip()
         if "||" in out:
             title, mins = out.split("||", 1)
-            event = {"title": title.strip()[:18], "minutes_left": max(0, int(float(mins.strip())))}
+            return {"title": title.strip()[:24], "minutes_left": max(0, int(float(mins.strip()))), "source": "eventkit"}
     except Exception:
         pass
+    return None
+
+
+def get_upcoming_calendar_event(within_minutes: int = 120, ics_url: str = "") -> Optional[Dict[str, Any]]:
+    """Query ICS feed (if configured) or native macOS EventKit/Calendar for upcoming meetings (cached 45s)."""
+    now = time.time()
+    cache_key = f"{ics_url.strip()}|{within_minutes}"
+    if _cal_cache["key"] == cache_key and (now - _cal_cache["ts"] < 45):
+        return _cal_cache["event"]
+
+    event = None
+    if ics_url and ics_url.strip().startswith(("http://", "https://")):
+        try:
+            event = _fetch_upcoming_ics_event(ics_url.strip(), within_minutes=within_minutes)
+        except Exception:
+            event = None
+    elif sys.platform == "darwin":
+        event = _get_macos_eventkit_event(within_minutes=within_minutes)
+        if event is None:
+            # Fallback to AppleScript Calendar.app
+            script = f'''
+            set nowDate to current date
+            set endDate to nowDate + ({int(within_minutes)} * minutes)
+            tell application "Calendar"
+                repeat with cal in calendars
+                    set evs to (every event of cal whose start date ≥ nowDate and start date ≤ endDate)
+                    if (count of evs) > 0 then
+                        set ev to item 1 of evs
+                        set minsLeft to round (((start date of ev) - nowDate) / 60)
+                        return (summary of ev) & "||" & (minsLeft as string)
+                    end if
+                end repeat
+            end tell
+            return ""
+            '''
+            try:
+                out = subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.DEVNULL, timeout=4.0).strip()
+                if "||" in out:
+                    title, mins = out.split("||", 1)
+                    event = {"title": title.strip()[:24], "minutes_left": max(0, int(float(mins.strip()))), "source": "applescript"}
+            except Exception:
+                pass
+
     _cal_cache["ts"] = now
+    _cal_cache["key"] = cache_key
     _cal_cache["event"] = event
     return event
 
@@ -223,7 +345,8 @@ def _get_windows_context() -> Tuple[str, int]:
         return "", 0
 
 
-def detect_mac_context(*, check_calendar: bool = False) -> Dict[str, Any]:
+def detect_mac_context(*, check_calendar: bool = False, ics_url: str = "") -> Dict[str, Any]:
+    next_event = get_upcoming_calendar_event(120, ics_url=ics_url) if check_calendar else None
     if sys.platform == "win32":
         front_app, idle_s = _get_windows_context()
         front_lower = front_app.lower()
@@ -234,14 +357,13 @@ def detect_mac_context(*, check_calendar: bool = False) -> Dict[str, Any]:
             "in_call": in_call,
             "is_coding": is_coding,
             "idle_seconds": idle_s,
-            "next_event": None,
+            "next_event": next_event,
         }
     front_app = get_macos_frontmost_app()
     front_lower = front_app.lower()
     in_call = get_macos_camera_or_call_active() or (front_lower in MEETING_APPS)
     is_coding = any(k in front_lower for k in CODING_APPS)
     idle_s = get_macos_idle_seconds()
-    next_event = get_upcoming_calendar_event(10) if check_calendar else None
     return {
         "front_app": front_app,
         "in_call": in_call,
@@ -469,3 +591,52 @@ def render_weather_clock_bg_gif(temp_c: int, kind: str = "clear_day", city: str 
 
         frames.append(img)
     return _frames_to_gif(frames, duration_ms=110)
+
+
+def render_calendar_clock_bg_gif(event: Optional[Dict[str, Any]], size: int = 64) -> bytes:
+    """
+    Render a 10-frame 64x64 animated Workday Calendar widget in the lower half (y=31..62),
+    leaving the top half (y=2..28) clean for the autonomous hardware RTC `{hh}:{mm}` clock.
+    """
+    frames: List[Image.Image] = []
+    n = 10
+    for f in range(n):
+        img = Image.new("RGB", (size, size), (0, 0, 0))
+        d = ImageDraw.Draw(img)
+        pulse = 0.5 + 0.5 * math.sin(2 * math.pi * (f / n))
+
+        if event:
+            mins = int(event.get("minutes_left", 0))
+            title = re.sub(r"[^A-Za-z0-9 :\-+!?]", "", str(event.get("title") or "MEETING")).strip().upper() or "MEETING"
+            urgent = mins <= 10
+            accent = (255, 55, 110) if urgent else (56, 189, 248)
+            dim = (95, 20, 45) if urgent else (20, 55, 85)
+            bar_col = tuple(int(dim[i] + (accent[i] - dim[i]) * pulse) for i in range(3))
+
+            # Horizon divider
+            d.line([(4, 29), (size - 5, 29)], fill=bar_col)
+
+            # Pulsing calendar/meeting dot + countdown row (y=35)
+            d.ellipse([4, 36, 9, 41], fill=bar_col)
+            when_str = "NOW!" if mins <= 1 else (f"IN {mins}M" if mins < 60 else f"IN {mins // 60}H{mins % 60:02d}")
+            draw_bitmap_str(img, when_str[:8], 35, accent, center=False, x=13)
+
+            # Meeting title row (y=49) — gently scrolls if longer than 10 chars
+            if len(title) <= 10:
+                draw_bitmap_str(img, title, 49, (255, 255, 255), center=True)
+            else:
+                padded = title + "   "
+                shift = f % len(padded)
+                window = (padded + padded)[shift : shift + 10]
+                draw_bitmap_str(img, window, 49, (255, 255, 255), center=False, x=2)
+        else:
+            bar_col = (20, int(90 + 45 * pulse), 55)
+            d.line([(4, 29), (size - 5, 29)], fill=bar_col)
+            # Clean green calendar check badge + "FREE DAY"
+            d.rounded_rectangle([4, 35, 14, 45], radius=2, outline=(35, 220, 120), width=1)
+            d.line([(6, 40), (8, 42), (12, 37)], fill=(35, 220, 120), width=1)
+            draw_bitmap_str(img, "CALENDAR", 36, (140, 235, 185), center=False, x=17)
+            draw_bitmap_str(img, "NO MTGS", 50, (35, 220, 120), center=True)
+
+        frames.append(img)
+    return _frames_to_gif(frames, duration_ms=260)

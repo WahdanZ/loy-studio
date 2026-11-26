@@ -63,6 +63,9 @@ if sys.platform == "darwin":
         plist["NSBluetoothAlwaysUsageDescription"] = "LOY Studio uses Bluetooth LE to connect to your 64x64 LED pixel display."
         plist["NSBluetoothPeripheralUsageDescription"] = "LOY Studio uses Bluetooth LE to connect to your 64x64 LED pixel display."
         plist["NSLocalNetworkUsageDescription"] = "LOY Studio uses local Wi-Fi so your phone can control the LED display."
+        plist["NSCalendarsUsageDescription"] = "LOY Studio checks upcoming meetings to flash 5-minute alerts on your LED display."
+        plist["NSCalendarsFullAccessUsageDescription"] = "LOY Studio checks upcoming meetings to flash 5-minute alerts on your LED display."
+        plist["NSAppleEventsUsageDescription"] = "LOY Studio reads active app and Calendar info for automatic desk modes."
         plist["CFBundleDisplayName"] = "LOY Studio"
         plist["CFBundleIdentifier"] = "com.loystudio.desktop"
         with plist_path.open("wb") as f:

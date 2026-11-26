@@ -86,6 +86,8 @@ from app.creative import (
 from app.smart_features import (
     detect_mac_context,
     fetch_open_meteo_weather,
+    get_upcoming_calendar_event,
+    render_calendar_clock_bg_gif,
     render_hydration_gif,
     render_notification_gif,
     render_weather_clock_bg_gif,
@@ -163,6 +165,8 @@ DEFAULT_SMART_CONFIG: Dict[str, Any] = {
     "auto_idle_brb": True,
     "idle_minutes": 5,
     "calendar_alerts": False,
+    "calendar_clock_enabled": False,
+    "calendar_ics_url": "",
     "hydration_enabled": False,
     "hydration_interval_min": 60,
     "weather_enabled": False,
@@ -2617,6 +2621,43 @@ async def _upload_weather_clock(city: str) -> Dict[str, Any]:
     return {"ok": True, "weather": wx, "wire_frames": len(wire_frames), "last_ack": res[-1]}
 
 
+async def _upload_calendar_clock(ics_url: str = "") -> Dict[str, Any]:
+    if not state.transport or not state.transport.is_connected:
+        raise RuntimeError("Not connected to display")
+    ev = await asyncio.to_thread(get_upcoming_calendar_event, 480, ics_url)
+    bg_gif = render_calendar_clock_bg_gif(ev, size=state.width)
+    w, h = state.width, state.height
+    regions = [
+        {"template": "{hh}:{mm}", "x": 4, "y": 4, "w": w - 8, "h": 24, "color": (255, 255, 255), "bg_color": (0, 0, 0), "font_size": 16},
+    ]
+    async with state.lock:
+        t = state.transport
+        await _ensure_exit_modal_mode()
+        await t.send_frame(cmd_sync_time(sno=t.next_sno()))
+        wire_frames = build_multi_region_hw_clock_frames(
+            regions, w, h, program_id=1, start_sno=t.next_sno(), show_now=True,
+            background_resource=bg_gif, bg_mode="behind",
+        )
+        lbl = f"Cal: {ev['title']} ({ev['minutes_left']}m)" if ev else "Cal Clock: Free"
+        res = await t.send_frames(wire_frames, label=lbl)
+        await t.send_frame(cmd_pgm_play(model=1, index=0, sno=t.next_sno()))
+    return {"ok": True, "event": ev, "wire_frames": len(wire_frames), "last_ack": res[-1]}
+
+
+async def handle_calendar_clock(req: web.Request) -> web.Response:
+    body = await req.json() if req.can_read_body else {}
+    cfg = _load_smart_config()
+    ics_url = str(body.get("ics_url") if "ics_url" in body else cfg.get("calendar_ics_url") or "").strip()
+    if ics_url != cfg.get("calendar_ics_url"):
+        cfg["calendar_ics_url"] = ics_url
+        _save_smart_config(cfg)
+    try:
+        res = await _upload_calendar_clock(ics_url)
+        return web.json_response(res)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 async def handle_weather_clock(req: web.Request) -> web.Response:
     body = await req.json() if req.can_read_body else {}
     cfg = _load_smart_config()
@@ -2634,7 +2675,11 @@ async def handle_weather_clock(req: web.Request) -> web.Response:
 async def handle_smart_config(req: web.Request) -> web.Response:
     if req.method == "GET":
         cfg = _load_smart_config()
-        ctx = await asyncio.to_thread(detect_mac_context, check_calendar=bool(cfg.get("calendar_alerts")))
+        ctx = await asyncio.to_thread(
+            detect_mac_context,
+            check_calendar=bool(cfg.get("calendar_alerts")),
+            ics_url=str(cfg.get("calendar_ics_url") or ""),
+        )
         return web.json_response({
             "config": cfg,
             "context": ctx,
@@ -2654,6 +2699,7 @@ async def _smart_watcher_loop() -> None:
     """Background watcher for Zero-Touch Mac Context, Hydration Reminders & Weather Refresh."""
     last_hydration_ts = time.monotonic()
     last_weather_ts = 0.0
+    last_cal_clock_ts = 0.0
     alerted_events: Set[str] = set()
 
     while True:
@@ -2664,9 +2710,12 @@ async def _smart_watcher_loop() -> None:
             cfg = _load_smart_config()
             now_mono = time.monotonic()
 
-            # 1. Zero-Touch Mac Context Awareness
+            # 1. Zero-Touch Mac/Windows Context Awareness
             if cfg.get("context_enabled"):
-                ctx = await asyncio.to_thread(detect_mac_context, check_calendar=bool(cfg.get("calendar_alerts")))
+                ctx = await asyncio.to_thread(
+                    detect_mac_context,
+                    check_calendar=False,
+                )
                 desired_override: Optional[str] = None
                 target_gif: Optional[str] = None
 
@@ -2698,9 +2747,15 @@ async def _smart_watcher_loop() -> None:
                         if matched:
                             await _apply_schedule_rule(matched)
 
-                # Optional Apple Calendar 5-min warning
-                ev = ctx.get("next_event")
-                if cfg.get("calendar_alerts") and ev and 0 <= ev["minutes_left"] <= 5:
+            # 1b. Independent Calendar 5-Min Meeting Alert (works even without Auto-Switch!)
+            if cfg.get("calendar_alerts"):
+                cal_ctx = await asyncio.to_thread(
+                    detect_mac_context,
+                    check_calendar=True,
+                    ics_url=str(cfg.get("calendar_ics_url") or ""),
+                )
+                ev = cal_ctx.get("next_event")
+                if ev and 0 <= ev["minutes_left"] <= 5:
                     ev_key = f"{datetime.date.today()}:{ev['title']}"
                     if ev_key not in alerted_events:
                         alerted_events.add(ev_key)
@@ -2720,6 +2775,14 @@ async def _smart_watcher_loop() -> None:
                 if now_mono - last_weather_ts >= 1800.0:
                     last_weather_ts = now_mono
                     await _upload_weather_clock(str(cfg.get("weather_city", "Berlin")))
+
+            # 4. Workday Calendar + RTC Clock Auto-Refresh (Mon-Fri 08:00-19:00, every 5 min)
+            if cfg.get("calendar_clock_enabled") and not getattr(state, "_context_override", None):
+                now_dt = datetime.datetime.now()
+                if now_dt.weekday() < 5 and 8 <= now_dt.hour < 19:
+                    if now_mono - last_cal_clock_ts >= 300.0:
+                        last_cal_clock_ts = now_mono
+                        await _upload_calendar_clock(str(cfg.get("calendar_ics_url") or ""))
         except Exception:
             pass
 
@@ -2800,6 +2863,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/notify", handle_notify)
     app.router.add_post("/api/hydration_now", handle_hydration_now)
     app.router.add_post("/api/weather_clock", handle_weather_clock)
+    app.router.add_post("/api/calendar_clock", handle_calendar_clock)
     app.router.add_get("/api/smart_config", handle_smart_config)
     app.router.add_post("/api/smart_config", handle_smart_config)
     return app
