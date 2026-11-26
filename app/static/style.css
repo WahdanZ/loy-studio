@@ -1088,18 +1088,17 @@ input[type="color"] {
 
   /* Create Studio 6 sub-tabs wrap cleanly into 2 rows on narrow screens */
   #wsCreate .pill-bar {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: wrap;
     overflow-x: visible;
     gap: 6px;
   }
   #wsCreate .pill-bar .pill {
+    flex: 1 1 auto;
     justify-content: center;
-    padding: 7px 6px;
+    padding: 6.5px 9px;
     font-size: 11.5px;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   /* Crisp 2x2 Pinned Switcher & 3-Column Modes on Phone! */
