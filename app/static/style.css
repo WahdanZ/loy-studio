@@ -453,6 +453,64 @@ input[type="color"] {
   background: #000;
 }
 
+/* v4.0 One-Tap Daily Switcher & Swipeable Mood Shelf */
+.pin-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.pin-tile {
+  padding: 13px 11px;
+  border-radius: 16px;
+  border: 1.5px solid var(--border);
+  background: var(--surface-elev);
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  transition: transform 0.12s, border-color 0.15s, background 0.15s;
+}
+.pin-tile:hover { border-color: rgba(96, 165, 250, 0.55); transform: translateY(-2px); }
+.pin-tile:active { transform: scale(0.96); }
+.pin-tile.active {
+  border-color: var(--accent);
+  background: linear-gradient(155deg, rgba(59, 130, 246, 0.22), rgba(6, 182, 212, 0.12));
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
+}
+.pin-ico { font-size: 21px; line-height: 1.1; }
+.pin-name { font-size: 13px; font-weight: 700; }
+.pin-desc { font-size: 11px; color: var(--text-secondary); }
+
+.mood-shelf {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.mood-shelf .quick-mode-btn {
+  width: 106px;
+  flex-shrink: 0;
+}
+
+.canvas-opts-drawer {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(14, 17, 25, 0.8);
+  padding: 8px 10px;
+}
+.canvas-opts-drawer summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  list-style: none;
+}
+.canvas-opts-drawer summary::-webkit-details-marker { display: none; }
+
 /* Quick Desk Modes Touch Grid */
 .quick-modes-grid {
   display: grid;
@@ -893,7 +951,8 @@ input[type="color"] {
   .led-bezel { padding: 8px; border-radius: 16px; }
   #homePreview { width: 92px; height: 92px; border-radius: 7px; }
 
-  /* Crisp 3-Column Instant Desk Modes on Phone! */
+  /* Crisp 2x2 Pinned Switcher & 3-Column Modes on Phone! */
+  .pin-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .quick-modes-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
   .quick-mode-btn { padding: 9px 6px; font-size: 11px; }
   .quick-mode-btn img { width: 44px; height: 44px; }

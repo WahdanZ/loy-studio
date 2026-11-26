@@ -174,6 +174,7 @@ DEFAULT_SMART_CONFIG: Dict[str, Any] = {
     "hydration_interval_min": 60,
     "weather_enabled": False,
     "weather_city": "Berlin",
+    "auto_cycle_enabled": False,
 }
 
 DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -2668,6 +2669,15 @@ async def handle_calendar_clock(req: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=500)
 
 
+async def handle_auto_cycle(req: web.Request) -> web.Response:
+    body = await req.json() if req.can_read_body else {}
+    cfg = _load_smart_config()
+    enabled = bool(body.get("enabled")) if "enabled" in body else not bool(cfg.get("auto_cycle_enabled"))
+    cfg["auto_cycle_enabled"] = enabled
+    _save_smart_config(cfg)
+    return web.json_response({"ok": True, "auto_cycle_enabled": enabled})
+
+
 async def handle_calendars_list(req: web.Request) -> web.Response:
     req_access = req.query.get("request", "0") in ("1", "true", "yes")
     cals = await asyncio.to_thread(list_macos_calendars, request_access=req_access)
@@ -2722,6 +2732,8 @@ async def _smart_watcher_loop() -> None:
     last_hydration_ts = time.monotonic()
     last_weather_ts = 0.0
     last_cal_clock_ts = 0.0
+    last_cycle_ts = 0.0
+    cycle_idx = 0
     alerted_events: Set[str] = set()
 
     while True:
@@ -2800,7 +2812,7 @@ async def _smart_watcher_loop() -> None:
                     await _upload_weather_clock(str(cfg.get("weather_city", "Berlin")))
 
             # 4. Workday Calendar + RTC Clock Auto-Refresh (Mon-Fri 08:00-19:00, every 5 min)
-            if cfg.get("calendar_clock_enabled") and not getattr(state, "_context_override", None):
+            if cfg.get("calendar_clock_enabled") and not cfg.get("auto_cycle_enabled") and not getattr(state, "_context_override", None):
                 now_dt = datetime.datetime.now()
                 if now_dt.weekday() < 5 and 8 <= now_dt.hour < 19:
                     if now_mono - last_cal_clock_ts >= 300.0:
@@ -2809,6 +2821,19 @@ async def _smart_watcher_loop() -> None:
                             str(cfg.get("calendar_ics_url") or ""),
                             str(cfg.get("calendar_name") or ""),
                         )
+
+            # 5. One-Tap Auto-Cycle (rotates Calendar Clock -> Weather Clock -> Synthwave every 5 min)
+            if cfg.get("auto_cycle_enabled") and not getattr(state, "_context_override", None):
+                if now_mono - last_cycle_ts >= 300.0:
+                    last_cycle_ts = now_mono
+                    step = cycle_idx % 3
+                    cycle_idx += 1
+                    if step == 0:
+                        await _upload_calendar_clock(str(cfg.get("calendar_ics_url") or ""), str(cfg.get("calendar_name") or ""))
+                    elif step == 1:
+                        await _upload_weather_clock(str(cfg.get("weather_city", "Berlin")))
+                    else:
+                        await _apply_schedule_rule({"id": "cycle_synth", "name": "Synthwave", "kind": "hw_clock", "target": "hw_synthwave_sun", "color": "#38bdf8", "accent": "#ec4899"})
         except Exception:
             pass
 
@@ -2890,6 +2915,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/hydration_now", handle_hydration_now)
     app.router.add_post("/api/weather_clock", handle_weather_clock)
     app.router.add_post("/api/calendar_clock", handle_calendar_clock)
+    app.router.add_post("/api/auto_cycle", handle_auto_cycle)
     app.router.add_get("/api/calendars", handle_calendars_list)
     app.router.add_get("/api/smart_config", handle_smart_config)
     app.router.add_post("/api/smart_config", handle_smart_config)

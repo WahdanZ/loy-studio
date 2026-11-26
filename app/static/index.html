@@ -10,7 +10,7 @@
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <title>LOY Studio — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=17" />
+  <link rel="stylesheet" href="/static/style.css?v=18" />
 </head>
 <body>
   <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
@@ -56,17 +56,15 @@
         <div class="brand-mark"><svg class="ico"><use href="#i-logo"/></svg></div>
         <div>
           <div class="brand-title">LOY Studio</div>
-          <div class="brand-sub">v3.0 · Offline BLE</div>
+          <div class="brand-sub">v4.0 · Effortless</div>
         </div>
       </div>
 
       <nav class="nav-list">
-        <button class="nav-item active" data-ws="wsHome"><svg class="ico"><use href="#i-home"/></svg> Home</button>
-        <button class="nav-item" data-ws="wsExplore"><svg class="ico"><use href="#i-sparkles"/></svg> Explore &amp; Library</button>
+        <button class="nav-item active" data-ws="wsHome"><svg class="ico"><use href="#i-home"/></svg> Now Playing</button>
+        <button class="nav-item" data-ws="wsExplore"><svg class="ico"><use href="#i-sparkles"/></svg> Gallery</button>
         <button class="nav-item" data-ws="wsCreate"><svg class="ico"><use href="#i-brush"/></svg> Create Studio</button>
-        <button class="nav-item" data-ws="wsSchedule"><svg class="ico"><use href="#i-clock"/></svg> Auto Schedule</button>
-        <button class="nav-item" data-ws="wsLive"><svg class="ico"><use href="#i-zap"/></svg> Smart &amp; Live</button>
-        <button class="nav-item" data-ws="wsDevice"><svg class="ico"><use href="#i-sliders"/></svg> Device &amp; Pairing</button>
+        <button class="nav-item" data-ws="wsLive"><svg class="ico"><use href="#i-zap"/></svg> Auto Routines</button>
       </nav>
 
       <div class="sidebar-footer">
@@ -78,6 +76,7 @@
           <button id="btnQuickScan" class="btn sm primary" style="flex:1;"><svg class="ico sm"><use href="#i-bluetooth"/></svg> Scan</button>
           <button id="btnQuickMock" class="btn sm" style="flex:1;">Simulator</button>
         </div>
+        <button class="btn sm full" data-jump="wsDevice"><svg class="ico sm"><use href="#i-sliders"/></svg> Device &amp; Phone QR</button>
       </div>
     </aside>
 
@@ -141,21 +140,53 @@
                 <input id="homeBriSlider" type="range" min="1" max="15" value="12" style="width:100%;" />
               </div>
               <div class="scroll-strip no-scrollbar">
-                <button class="btn sm" data-jump="wsSchedule"><svg class="ico sm"><use href="#i-clock"/></svg> <span id="homeSchedLink">Auto Schedule</span></button>
+                <button id="btnHomeHydrate" class="btn sm">💧 Drink Water</button>
+                <button id="btnAutoCycle" class="btn sm">🔄 Auto-Cycle</button>
                 <button id="btnHomeSyncTime" class="btn sm"><svg class="ico sm"><use href="#i-refresh"/></svg> Sync RTC</button>
+                <button class="btn sm" data-jump="wsSchedule"><svg class="ico sm"><use href="#i-clock"/></svg> <span id="homeSchedLink">Schedule</span></button>
                 <button id="btnHomeExitMode" class="btn sm">Exit Modal</button>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- Instant 1-Tap Desk Modes Grid (Above the fold on mobile!) -->
+        <!-- v4.0 One-Tap Daily Switcher (4 Big Pinned Drivers!) -->
         <div class="card" style="margin-bottom:14px;">
           <div class="card-header">
-            <h2><svg class="ico"><use href="#i-zap"/></svg> Instant Desk Modes</h2>
-            <span class="badge blue">1-Tap Switch</span>
+            <h2><svg class="ico"><use href="#i-zap"/></svg> One-Tap Switcher</h2>
+            <span class="badge blue">Pinned Daily Drivers</span>
           </div>
-          <div id="homeQuickModes" class="quick-modes-grid"></div>
+          <div class="pin-grid">
+            <button id="pinCalClock" type="button" class="pin-tile">
+              <span class="pin-ico">📅</span>
+              <span class="pin-name">Calendar Clock</span>
+              <span class="pin-desc">Next meeting + time</span>
+            </button>
+            <button id="pinWxClock" type="button" class="pin-tile">
+              <span class="pin-ico">🌤️</span>
+              <span class="pin-name">Weather Clock</span>
+              <span class="pin-desc">Live temp + time</span>
+            </button>
+            <button id="pinOnAir" type="button" class="pin-tile">
+              <span class="pin-ico">🔴</span>
+              <span class="pin-name">ON AIR</span>
+              <span class="pin-desc">In a call / recording</span>
+            </button>
+            <button id="pinCoding" type="button" class="pin-tile">
+              <span class="pin-ico">👨‍💻</span>
+              <span class="pin-name">Coding Mode</span>
+              <span class="pin-desc">Deep focus display</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Quick Moods Horizontal Swipe Shelf -->
+        <div class="card" style="margin-bottom:14px;">
+          <div class="card-header">
+            <h2><svg class="ico"><use href="#i-sparkles"/></svg> Quick Moods</h2>
+            <span class="badge">Swipe →</span>
+          </div>
+          <div id="homeQuickModes" class="mood-shelf no-scrollbar"></div>
         </div>
 
         <div class="grid-2">
@@ -380,20 +411,23 @@
             <!-- Inline Quick Color Strip (Always visible on mobile & inside Fullscreen Draw!) -->
             <div id="fsQuickColors" class="quick-color-bar no-scrollbar"></div>
 
-            <div class="scroll-strip no-scrollbar" style="width:100%;">
-              <label class="inline muted" style="flex-shrink:0;">Size <input id="brushSize" type="number" min="1" max="5" value="1" style="width:48px;" /></label>
-              <label class="inline muted" style="flex-shrink:0;"><input id="chkLedSim" type="checkbox" checked /> LED</label>
-              <label class="inline muted" style="flex-shrink:0;"><input id="chkGrid" type="checkbox" checked /> Grid</label>
-              <label class="inline muted" style="flex-shrink:0;"><input id="chkSymX" type="checkbox" /> SymX</label>
-              <label class="inline muted" style="flex-shrink:0;"><input id="chkSymY" type="checkbox" /> SymY</label>
-              <label class="inline muted" style="flex-shrink:0;"><input id="chkOnion" type="checkbox" /> Onion</label>
-              <label class="inline muted" style="flex-shrink:0;"><input id="chkLiveDraw" type="checkbox" /> Live</label>
-              <button id="btnFlipH" class="btn sm" style="flex-shrink:0;">FlipH</button>
-              <button id="btnFlipV" class="btn sm" style="flex-shrink:0;">FlipV</button>
-              <button id="btnRot90" class="btn sm" style="flex-shrink:0;">90°</button>
-              <button id="btnZoomOut" class="btn sm icon-btn" style="flex-shrink:0;">−</button>
-              <button id="btnZoomIn" class="btn sm icon-btn" style="flex-shrink:0;">+</button>
-            </div>
+            <details class="canvas-opts-drawer">
+              <summary>⚙ Canvas Options (Brush Size, Grid, Symmetry, Flip, Zoom)</summary>
+              <div class="scroll-strip no-scrollbar" style="width:100%;margin-top:8px;">
+                <label class="inline muted" style="flex-shrink:0;">Size <input id="brushSize" type="number" min="1" max="5" value="1" style="width:48px;" /></label>
+                <label class="inline muted" style="flex-shrink:0;"><input id="chkLedSim" type="checkbox" checked /> LED</label>
+                <label class="inline muted" style="flex-shrink:0;"><input id="chkGrid" type="checkbox" checked /> Grid</label>
+                <label class="inline muted" style="flex-shrink:0;"><input id="chkSymX" type="checkbox" /> SymX</label>
+                <label class="inline muted" style="flex-shrink:0;"><input id="chkSymY" type="checkbox" /> SymY</label>
+                <label class="inline muted" style="flex-shrink:0;"><input id="chkOnion" type="checkbox" /> Onion</label>
+                <label class="inline muted" style="flex-shrink:0;"><input id="chkLiveDraw" type="checkbox" /> Live</label>
+                <button id="btnFlipH" class="btn sm" style="flex-shrink:0;">FlipH</button>
+                <button id="btnFlipV" class="btn sm" style="flex-shrink:0;">FlipV</button>
+                <button id="btnRot90" class="btn sm" style="flex-shrink:0;">90°</button>
+                <button id="btnZoomOut" class="btn sm icon-btn" style="flex-shrink:0;">−</button>
+                <button id="btnZoomIn" class="btn sm icon-btn" style="flex-shrink:0;">+</button>
+              </div>
+            </details>
 
             <div id="frameStrip" class="frame-strip"></div>
             <button id="btnMobCanvasSend" class="btn primary full"><svg class="ico sm"><use href="#i-send"/></svg> Send Artwork to Display</button>
@@ -674,8 +708,17 @@
         </div>
       </section>
 
-      <!-- ==================== SMART & LIVE ==================== -->
+      <!-- ==================== SMART & LIVE (v4.0 AUTO ROUTINES) ==================== -->
       <section id="wsLive" class="workspace">
+        <div class="card" style="margin-bottom:14px;">
+          <div class="row">
+            <div>
+              <h2>🗓️ Custom 24-Hour Schedule &amp; Night Dimming</h2>
+              <p class="muted" style="font-size:12px;">Automatically switch modes &amp; dim brightness by time of day and weekday.</p>
+            </div>
+            <button class="btn sm primary" data-jump="wsSchedule">Open 24h Timeline →</button>
+          </div>
+        </div>
         <div class="grid-3">
           <div class="card">
             <div class="card-header"><h2><svg class="ico"><use href="#i-zap"/></svg> Mac Context Auto-Mode</h2><span class="badge green">Local</span></div>
@@ -897,13 +940,12 @@
     </div>
   </div>
 
-  <!-- Floating 5-Tab iOS Glass Dock (Mobile Only — Zero Crowding!) -->
+  <!-- Floating 4-Tab iOS Glass Dock (v4.0 Effortless Mobile Nav) -->
   <nav class="mobile-dock">
-    <button class="dock-item active" data-ws="wsHome"><svg class="ico"><use href="#i-home"/></svg><span>Home</span></button>
-    <button class="dock-item" data-ws="wsExplore"><svg class="ico"><use href="#i-sparkles"/></svg><span>Explore</span></button>
+    <button class="dock-item active" data-ws="wsHome"><svg class="ico"><use href="#i-home"/></svg><span>Now</span></button>
+    <button class="dock-item" data-ws="wsExplore"><svg class="ico"><use href="#i-sparkles"/></svg><span>Gallery</span></button>
     <button class="dock-fab" data-ws="wsCreate" aria-label="Create Studio"><svg class="ico lg"><use href="#i-brush"/></svg></button>
-    <button class="dock-item" data-ws="wsSchedule"><svg class="ico"><use href="#i-clock"/></svg><span>Schedule</span></button>
-    <button class="dock-item" data-ws="wsLive"><svg class="ico"><use href="#i-zap"/></svg><span>Smart</span></button>
+    <button class="dock-item" data-ws="wsLive"><svg class="ico"><use href="#i-zap"/></svg><span>Auto</span></button>
   </nav>
 
   <!-- Password Unlock Modal (Phone / LAN Clients) -->
@@ -923,6 +965,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=17"></script>
+  <script src="/static/app.js?v=18"></script>
 </body>
 </html>

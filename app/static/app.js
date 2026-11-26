@@ -105,7 +105,7 @@
   }
 
   // ---------------- Navigation ----------------
-  const wsTitles = { wsHome: "Home", wsCreate: "Create Studio", wsExplore: "Explore & Library", wsLive: "Smart & Live", wsSchedule: "Auto Schedule", wsDevice: "Device & Pairing" };
+  const wsTitles = { wsHome: "Now Playing", wsCreate: "Create Studio", wsExplore: "Gallery", wsLive: "Auto Routines", wsSchedule: "24h Schedule", wsDevice: "Device & Phone QR" };
   function switchWorkspace(wsId) {
     if (wsId === "wsLibrary") {
       wsId = "wsExplore";
@@ -2009,6 +2009,11 @@
         $("hydEnabled").checked = Boolean(config.hydration_enabled);
         $("hydMin").value = config.hydration_interval_min ?? 60;
       }
+  if ($("btnAutoCycle") && config) {
+        const on = Boolean(config.auto_cycle_enabled);
+        $("btnAutoCycle").classList.toggle("primary", on);
+        $("btnAutoCycle").textContent = on ? "🔄 Auto-Cycle: ON" : "🔄 Auto-Cycle";
+      }
       if ($("macCtxReadout") && context) {
         $("macCtxReadout").textContent = `App: ${context.front_app || "—"} · Call: ${context.in_call ? "ON AIR 🔴" : "No"} · Idle: ${context.idle_seconds}s${active_override ? ` · Override: ${active_override}` : ""}`;
       }
@@ -2079,6 +2084,57 @@
       const ev = res.event;
       if ($("ctxCalReadout")) $("ctxCalReadout").textContent = ev ? `Live: ${ev.title} in ${ev.minutes_left}m` : "Live: No meetings today (Free)";
       toast(ev ? `Calendar Clock sent: ${ev.title} (${ev.minutes_left}m)` : "Calendar Clock sent (No upcoming meetings)");
+    } catch (err) { toast(err.message); }
+  };
+
+  // v4.0 Now Playing Pinned Switcher + Quick Actions
+  function markPinned(activeId) {
+    ["pinCalClock", "pinWxClock", "pinOnAir", "pinCoding"].forEach((id) => {
+      if ($(id)) $(id).classList.toggle("active", id === activeId);
+    });
+  }
+  if ($("pinCalClock")) $("pinCalClock").onclick = async () => {
+    markPinned("pinCalClock");
+    try {
+      const res = await api("/api/calendar_clock", { method: "POST", body: "{}" });
+      const ev = res.event;
+      toast(ev ? `Calendar Clock: ${ev.title} (${ev.minutes_left}m)` : "Calendar Clock: Free Day");
+    } catch (err) { toast(err.message); }
+  };
+  if ($("pinWxClock")) $("pinWxClock").onclick = async () => {
+    markPinned("pinWxClock");
+    try {
+      const res = await api("/api/weather_clock", { method: "POST", body: "{}" });
+      toast(`Weather Clock: ${res.weather.city} ${res.weather.temp_c}°C`);
+    } catch (err) { toast(err.message); }
+  };
+  if ($("pinOnAir")) $("pinOnAir").onclick = async () => {
+    markPinned("pinOnAir");
+    try {
+      await api("/api/gif_pack/send", { method: "POST", body: JSON.stringify({ filename: "11_mode_on_air_meeting.gif" }) });
+      toast("Switched → ON AIR 🔴");
+    } catch (err) { toast(err.message); }
+  };
+  if ($("pinCoding")) $("pinCoding").onclick = async () => {
+    markPinned("pinCoding");
+    try {
+      await api("/api/gif_pack/send", { method: "POST", body: JSON.stringify({ filename: "10_mode_coding.gif" }) });
+      toast("Switched → Coding Mode");
+    } catch (err) { toast(err.message); }
+  };
+  if ($("btnHomeHydrate")) $("btnHomeHydrate").onclick = async () => {
+    try {
+      await api("/api/hydration_now", { method: "POST", body: JSON.stringify({ duration_s: 10 }) });
+      toast("💧 Flashed Drink Water (10s)");
+    } catch (err) { toast(err.message); }
+  };
+  if ($("btnAutoCycle")) $("btnAutoCycle").onclick = async () => {
+    try {
+      const res = await api("/api/auto_cycle", { method: "POST", body: "{}" });
+      const on = Boolean(res.auto_cycle_enabled);
+      $("btnAutoCycle").classList.toggle("primary", on);
+      $("btnAutoCycle").textContent = on ? "🔄 Auto-Cycle: ON" : "🔄 Auto-Cycle";
+      toast(on ? "Auto-Cycle ON (Calendar → Weather → Synthwave every 5m)" : "Auto-Cycle paused");
     } catch (err) { toast(err.message); }
   };
   if ($("btnWxSend")) $("btnWxSend").onclick = async () => {
