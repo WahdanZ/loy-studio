@@ -419,6 +419,16 @@
 
             <div class="canvas-viewport">
               <canvas id="pixelCanvas" width="448" height="448"></canvas>
+              <div id="canvasStartPanel" class="canvas-start-panel">
+                <div class="canvas-start-title">Start from…</div>
+                <div class="canvas-start-grid">
+                  <button type="button" class="btn sm" data-start-sub="subStamps">🎨 Template</button>
+                  <button type="button" class="btn sm" data-start-sub="subStamps">✨ Emoji</button>
+                  <button type="button" class="btn sm" data-start-sub="subTextQr">🔤 Text</button>
+                  <button type="button" class="btn sm" data-start-sub="subMedia">📷 Photo</button>
+                </div>
+                <div class="canvas-start-hint">or tap the canvas to draw</div>
+              </div>
             </div>
 
             <!-- Inline Quick Color Strip (Always visible on mobile & inside Fullscreen Draw!) -->
@@ -736,132 +746,143 @@
 
       <!-- ==================== SMART & LIVE (v4.0 AUTO ROUTINES) ==================== -->
       <section id="wsLive" class="workspace">
-        <div class="card" style="margin-bottom:14px;">
-          <div class="row">
-            <div>
-              <h2>🗓️ Custom 24-Hour Schedule &amp; Night Dimming</h2>
-              <p class="muted" style="font-size:12px;">Automatically switch modes &amp; dim brightness by time of day and weekday.</p>
+        <div class="seg-bar cols-2">
+          <button type="button" class="seg-btn active" data-live="liveRoutines">Routines</button>
+          <button type="button" class="seg-btn" data-live="liveTools">Tools</button>
+        </div>
+
+        <div id="liveRoutines" class="live-pane active">
+          <div class="card" style="margin-bottom:14px;">
+            <div class="row">
+              <div>
+                <h2>🗓️ Custom 24-Hour Schedule &amp; Night Dimming</h2>
+                <p class="muted" style="font-size:12px;">Automatically switch modes &amp; dim brightness by time of day and weekday.</p>
+              </div>
+              <button class="btn sm primary" data-jump="wsSchedule">Open 24h Timeline →</button>
             </div>
-            <button class="btn sm primary" data-jump="wsSchedule">Open 24h Timeline →</button>
+          </div>
+          <div class="grid-2">
+            <div class="card">
+              <div class="card-header"><h2><svg class="ico"><use href="#i-zap"/></svg> Mac Context Auto-Mode</h2><span class="badge green">Local</span></div>
+              <div id="macCtxReadout" class="muted">Checking your Mac…</div>
+              <label class="inline" style="gap:8px;font-weight:600;"><input id="ctxEnabled" type="checkbox" /> Zero-Touch Auto-Switch</label>
+              <label class="inline muted" style="gap:8px;"><input id="ctxOnAir" type="checkbox" checked /> Auto ON AIR on Camera / Zoom</label>
+              <label class="inline muted" style="gap:8px;"><input id="ctxCoding" type="checkbox" checked /> Auto Coding in IDE / Terminal</label>
+              <label class="inline muted" style="gap:8px;"><input id="ctxIdle" type="checkbox" checked /> Auto BRB after <input id="ctxIdleMin" type="number" min="1" max="60" value="5" style="width:48px;" />m idle</label>
+              <label class="inline muted" style="gap:8px;"><input id="ctxCal" type="checkbox" /> Calendar 5m Meeting Alert</label>
+              <label class="inline muted" style="gap:8px;"><input id="ctxCalClock" type="checkbox" /> Workday Clock + Next Meeting (Mon–Fri)</label>
+              <div class="inline">
+                <select id="ctxCalName" style="flex:1;">
+                  <option value="">All macOS Calendars</option>
+                </select>
+                <button id="btnCalRefresh" class="btn sm icon-btn" title="Refresh macOS Calendars"><svg class="ico sm"><use href="#i-refresh"/></svg></button>
+              </div>
+              <div id="ctxCalReadout" class="muted" style="font-size:11.5px;">Calendar: pick a macOS calendar above or paste .ics URL</div>
+              <div class="inline">
+                <input id="ctxCalIcs" type="text" placeholder="Optional Google / Outlook .ics URL" style="flex:1;" />
+                <button id="btnCalClockSend" class="btn sm primary"><svg class="ico sm"><use href="#i-send"/></svg> Clock</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header"><h2><svg class="ico"><use href="#i-cloud"/></svg> Pixel Weather + Clock</h2><span class="badge amber">Open-Meteo</span></div>
+              <div id="wxReadout" class="muted">Animated pixel weather + autonomous hardware RTC clock.</div>
+              <div class="inline">
+                <input id="wxCity" type="text" value="Berlin" placeholder="City name" style="flex:1;" />
+                <button id="btnWxSend" class="btn sm primary"><svg class="ico sm"><use href="#i-send"/></svg> Send</button>
+              </div>
+              <label class="inline muted" style="gap:8px;"><input id="wxAuto" type="checkbox" /> Auto-refresh every 30m</label>
+            </div>
+
+            <div class="card">
+              <div class="card-header"><h2><svg class="ico"><use href="#i-bell"/></svg> Alert Webhook</h2><span class="badge blue">POST /api/notify</span></div>
+              <p class="muted">Shows a temporary alert, then returns to what was playing.</p>
+              <div class="inline">
+                <input id="ntfTitle" type="text" value="BUILD OK" placeholder="Title" style="flex:1;" />
+                <input id="ntfSub" type="text" value="ALL PASS" placeholder="Subtitle" style="flex:1;" />
+              </div>
+              <div class="inline">
+                <select id="ntfStyle" style="flex:1;">
+                  <option value="success">Success</option>
+                  <option value="error">Error</option>
+                  <option value="warning">Warning</option>
+                  <option value="meeting">Meeting</option>
+                  <option value="info">Info</option>
+                </select>
+                <input id="ntfDur" type="number" min="3" max="60" value="8" style="width:52px;" title="Seconds" />
+                <button id="btnNtfFlash" class="btn sm primary"><svg class="ico sm"><use href="#i-zap"/></svg> Flash</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header"><h2><svg class="ico"><use href="#i-droplet"/></svg> Hydration Reminder</h2><span class="badge green">H2O</span></div>
+              <button id="btnHydrateNow" class="btn sm primary full"><svg class="ico sm"><use href="#i-droplet"/></svg> Flash Drink H2O Now</button>
+              <label class="inline muted" style="gap:8px;">
+                <input id="hydEnabled" type="checkbox" /> Remind every <input id="hydMin" type="number" min="15" max="180" value="60" style="width:52px;" /> min
+              </label>
+            </div>
           </div>
         </div>
-        <div class="grid-3">
-          <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-zap"/></svg> Mac Context Auto-Mode</h2><span class="badge green">Local</span></div>
-            <div id="macCtxReadout" class="muted">App: — · Call: — · Idle: —</div>
-            <label class="inline" style="gap:8px;font-weight:600;"><input id="ctxEnabled" type="checkbox" /> Zero-Touch Auto-Switch</label>
-            <label class="inline muted" style="gap:8px;"><input id="ctxOnAir" type="checkbox" checked /> Auto ON AIR on Camera / Zoom</label>
-            <label class="inline muted" style="gap:8px;"><input id="ctxCoding" type="checkbox" checked /> Auto Coding in IDE / Terminal</label>
-            <label class="inline muted" style="gap:8px;"><input id="ctxIdle" type="checkbox" checked /> Auto BRB after <input id="ctxIdleMin" type="number" min="1" max="60" value="5" style="width:48px;" />m idle</label>
-            <label class="inline muted" style="gap:8px;"><input id="ctxCal" type="checkbox" /> Calendar 5m Meeting Alert</label>
-            <label class="inline muted" style="gap:8px;"><input id="ctxCalClock" type="checkbox" /> Workday Clock + Next Meeting (Mon–Fri)</label>
-            <div class="inline">
-              <select id="ctxCalName" style="flex:1;">
-                <option value="">All macOS Calendars</option>
-              </select>
-              <button id="btnCalRefresh" class="btn sm icon-btn" title="Refresh macOS Calendars"><svg class="ico sm"><use href="#i-refresh"/></svg></button>
-            </div>
-            <div id="ctxCalReadout" class="muted" style="font-size:11.5px;">Calendar: pick a macOS calendar above or paste .ics URL</div>
-            <div class="inline">
-              <input id="ctxCalIcs" type="text" placeholder="Optional Google / Outlook .ics URL" style="flex:1;" />
-              <button id="btnCalClockSend" class="btn sm primary"><svg class="ico sm"><use href="#i-send"/></svg> Clock</button>
-            </div>
-          </div>
 
-          <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-cloud"/></svg> Pixel Weather + Clock</h2><span class="badge amber">Open-Meteo</span></div>
-            <div id="wxReadout" class="muted">Animated pixel weather + autonomous hardware RTC clock.</div>
-            <div class="inline">
-              <input id="wxCity" type="text" value="Berlin" placeholder="City name" style="flex:1;" />
-              <button id="btnWxSend" class="btn sm primary"><svg class="ico sm"><use href="#i-send"/></svg> Send</button>
+        <div id="liveTools" class="live-pane">
+          <div class="grid-3">
+            <div class="card">
+              <div class="card-header"><h2><svg class="ico"><use href="#i-mic"/></svg> Room Mic &amp; Ambient</h2><span class="badge green">Hardware</span></div>
+              <div class="inline">
+                <label class="muted">Mic Style <input id="micStyle" type="number" min="0" max="10" value="0" style="width:56px;" /></label>
+                <button id="btnMicEnable" class="btn sm primary" style="flex:1;"><svg class="ico sm"><use href="#i-mic"/></svg> Enable Mic</button>
+              </div>
+              <div class="inline">
+                <select id="ambMode" style="flex:1;"><option value="0">Dynamic Ambient</option><option value="1">Solid Ambient</option></select>
+                <input id="ambCol" type="color" value="#3b82f6" />
+                <button id="btnAmbApply" class="btn sm">Apply</button>
+              </div>
             </div>
-            <label class="inline muted" style="gap:8px;"><input id="wxAuto" type="checkbox" /> Auto-refresh every 30m</label>
-          </div>
 
-          <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-bell"/></svg> Alert Webhook</h2><span class="badge blue">POST /api/notify</span></div>
-            <p class="muted">Flashes a temporary alert in RAM Slot 2, then restores Slot 1.</p>
-            <div class="inline">
-              <input id="ntfTitle" type="text" value="BUILD OK" placeholder="Title" style="flex:1;" />
-              <input id="ntfSub" type="text" value="ALL PASS" placeholder="Subtitle" style="flex:1;" />
+            <div class="card">
+              <div class="card-header"><h2><svg class="ico"><use href="#i-clock"/></svg> Pomodoro Focus</h2><span class="badge amber">Timer</span></div>
+              <div class="row">
+                <label class="muted">Min <input id="pomoMin" type="number" min="1" max="90" value="25" style="width:62px;" /></label>
+                <span id="pomoReadout" style="font-size:20px;font-weight:700;font-family:var(--font-mono);">25:00</span>
+              </div>
+              <div class="grid-2">
+                <button id="btnPomoStart" class="btn sm primary"><svg class="ico sm"><use href="#i-play"/></svg> Start</button>
+                <button id="btnPomoStop" class="btn sm">Stop</button>
+              </div>
             </div>
-            <div class="inline">
-              <select id="ntfStyle" style="flex:1;">
-                <option value="success">Success</option>
-                <option value="error">Error</option>
-                <option value="warning">Warning</option>
-                <option value="meeting">Meeting</option>
-                <option value="info">Info</option>
-              </select>
-              <input id="ntfDur" type="number" min="3" max="60" value="8" style="width:52px;" title="Seconds" />
-              <button id="btnNtfFlash" class="btn sm primary"><svg class="ico sm"><use href="#i-zap"/></svg> Flash</button>
-            </div>
-          </div>
 
-          <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-droplet"/></svg> Hydration Reminder</h2><span class="badge green">H2O</span></div>
-            <button id="btnHydrateNow" class="btn sm primary full"><svg class="ico sm"><use href="#i-droplet"/></svg> Flash Drink H2O Now</button>
-            <label class="inline muted" style="gap:8px;">
-              <input id="hydEnabled" type="checkbox" /> Remind every <input id="hydMin" type="number" min="15" max="180" value="60" style="width:52px;" /> min
-            </label>
-          </div>
+            <div class="card">
+              <div class="card-header"><h2><svg class="ico"><use href="#i-cpu"/></svg> macOS System &amp; Music</h2><span class="badge">Local</span></div>
+              <div id="sysStatsReadout" class="muted">CPU: — · RAM: —</div>
+              <div id="nowPlayingReadout" class="muted">Now Playing: —</div>
+              <div class="grid-2">
+                <button id="btnSendSysWidget" class="btn sm primary">Send CPU/RAM</button>
+                <button id="btnSendNpWidget" class="btn sm">Now Playing</button>
+              </div>
+            </div>
 
-          <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-mic"/></svg> Room Mic &amp; Ambient</h2><span class="badge green">Hardware</span></div>
-            <div class="inline">
-              <label class="muted">Mic Style <input id="micStyle" type="number" min="0" max="10" value="0" style="width:56px;" /></label>
-              <button id="btnMicEnable" class="btn sm primary" style="flex:1;"><svg class="ico sm"><use href="#i-mic"/></svg> Enable Mic</button>
+            <div class="card">
+              <div class="card-header"><h2>Status Card</h2><span class="badge blue">One-Shot</span></div>
+              <input id="cardTitle" type="text" value="IN FOCUS" placeholder="Title" />
+              <input id="cardSub" type="text" value="DO NOT DISTURB" placeholder="Subtitle" />
+              <div class="inline">
+                <input id="cardColor" type="color" value="#f43f5e" />
+                <button id="btnSendCard" class="btn primary" style="flex:1;"><svg class="ico sm"><use href="#i-send"/></svg> Send Card</button>
+              </div>
             </div>
-            <div class="inline">
-              <select id="ambMode" style="flex:1;"><option value="0">Dynamic Ambient</option><option value="1">Solid Ambient</option></select>
-              <input id="ambCol" type="color" value="#3b82f6" />
-              <button id="btnAmbApply" class="btn sm">Apply</button>
-            </div>
-          </div>
 
-          <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-clock"/></svg> Pomodoro Focus</h2><span class="badge amber">Timer</span></div>
-            <div class="row">
-              <label class="muted">Min <input id="pomoMin" type="number" min="1" max="90" value="25" style="width:62px;" /></label>
-              <span id="pomoReadout" style="font-size:20px;font-weight:700;font-family:var(--font-mono);">25:00</span>
-            </div>
-            <div class="grid-2">
-              <button id="btnPomoStart" class="btn sm primary"><svg class="ico sm"><use href="#i-play"/></svg> Start</button>
-              <button id="btnPomoStop" class="btn sm">Stop</button>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-cpu"/></svg> macOS System &amp; Music</h2><span class="badge">Local</span></div>
-            <div id="sysStatsReadout" class="muted">CPU: — · RAM: —</div>
-            <div id="nowPlayingReadout" class="muted">Now Playing: —</div>
-            <div class="grid-2">
-              <button id="btnSendSysWidget" class="btn sm primary">Send CPU/RAM</button>
-              <button id="btnSendNpWidget" class="btn sm">Now Playing</button>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-header"><h2>Status Card</h2><span class="badge blue">One-Shot</span></div>
-            <input id="cardTitle" type="text" value="IN FOCUS" placeholder="Title" />
-            <input id="cardSub" type="text" value="DO NOT DISTURB" placeholder="Subtitle" />
-            <div class="inline">
-              <input id="cardColor" type="color" value="#f43f5e" />
-              <button id="btnSendCard" class="btn primary" style="flex:1;"><svg class="ico sm"><use href="#i-send"/></svg> Send Card</button>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-header"><h2>Countdown &amp; Scoreboard</h2><span class="badge green">Hardware</span></div>
-            <div class="inline">
-              <input id="cdM" type="number" min="0" max="59" value="5" style="width:54px;" />
-              <input id="cdS" type="number" min="0" max="59" value="0" style="width:54px;" />
-              <button id="btnCdStart" class="btn sm primary" style="flex:1;">Countdown</button>
-            </div>
-            <div class="inline">
-              <input id="sbR" type="number" min="0" max="999" value="0" style="width:58px;" />
-              <input id="sbB" type="number" min="0" max="999" value="0" style="width:58px;" />
-              <button id="btnSbSet" class="btn sm" style="flex:1;">Scoreboard</button>
+            <div class="card">
+              <div class="card-header"><h2>Countdown &amp; Scoreboard</h2><span class="badge green">Hardware</span></div>
+              <div class="inline">
+                <input id="cdM" type="number" min="0" max="59" value="5" style="width:54px;" />
+                <input id="cdS" type="number" min="0" max="59" value="0" style="width:54px;" />
+                <button id="btnCdStart" class="btn sm primary" style="flex:1;">Countdown</button>
+              </div>
+              <div class="inline">
+                <input id="sbR" type="number" min="0" max="999" value="0" style="width:58px;" />
+                <input id="sbB" type="number" min="0" max="999" value="0" style="width:58px;" />
+                <button id="btnSbSet" class="btn sm" style="flex:1;">Scoreboard</button>
+              </div>
             </div>
           </div>
         </div>

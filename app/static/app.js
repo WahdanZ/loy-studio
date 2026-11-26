@@ -133,7 +133,7 @@
   document.querySelectorAll("[data-ws]").forEach((b) => (b.onclick = () => switchWorkspace(b.dataset.ws)));
   document.querySelectorAll("[data-jump]").forEach((b) => (b.onclick = () => switchWorkspace(b.dataset.jump)));
 
-  // Explore 3-way segmented tabs (Live Clocks | 18 GIFs | My Library)
+  // Explore 3-way segmented tabs (Live Clocks | GIFs | My Library)
   document.querySelectorAll(".seg-btn[data-exp]").forEach((btn) => {
     btn.onclick = () => {
       document.querySelectorAll(".seg-btn[data-exp]").forEach((x) => x.classList.remove("active"));
@@ -143,6 +143,72 @@
       if (pane) pane.classList.add("active");
     };
   });
+
+  // Auto Routines 2-way segmented tabs (Routines | Tools)
+  document.querySelectorAll(".seg-btn[data-live]").forEach((btn) => {
+    btn.onclick = () => {
+      document.querySelectorAll(".seg-btn[data-live]").forEach((x) => x.classList.remove("active"));
+      document.querySelectorAll(".live-pane").forEach((x) => x.classList.remove("active"));
+      btn.classList.add("active");
+      const pane = $(btn.dataset.live);
+      if (pane) pane.classList.add("active");
+    };
+  });
+
+  // Empty Canvas "Start from…" shortcuts
+  function updateCanvasStartPanel() {
+    const panel = $("canvasStartPanel");
+    if (!panel) return;
+    if (floatingItem) { panel.classList.add("hidden"); return; }
+    const buf = frames[activeFrame];
+    let hasInk = false;
+    if (buf) {
+      for (let i = 0; i < buf.length; i++) {
+        if (buf[i] !== 0) { hasInk = true; break; }
+      }
+    }
+    panel.classList.toggle("hidden", hasInk);
+  }
+  document.querySelectorAll("[data-start-sub]").forEach((btn) => {
+    btn.onclick = () => {
+      const subId = btn.dataset.startSub;
+      const pill = document.querySelector(`.pill[data-sub="${subId}"]`);
+      if (pill) pill.click();
+    };
+  });
+
+  // Per-tile upload progress helper driven by "transfer_update" WebSocket events
+  let activeSendingTile = null;
+  function setTileProgressText(el, text) {
+    if (!el) return;
+    let badge = el.querySelector(".tile-progress");
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "tile-progress";
+      el.appendChild(badge);
+    }
+    badge.textContent = text;
+  }
+  async function withTileProgress(el, fn) {
+    if (activeSendingTile && activeSendingTile !== el) {
+      activeSendingTile.classList.remove("sending");
+      activeSendingTile.querySelector(".tile-progress")?.remove();
+    }
+    activeSendingTile = el || null;
+    if (el) {
+      el.classList.add("sending");
+      setTileProgressText(el, "Sending… 0%");
+    }
+    try {
+      return await fn();
+    } finally {
+      if (el) {
+        el.classList.remove("sending");
+        el.querySelector(".tile-progress")?.remove();
+      }
+      if (activeSendingTile === el) activeSendingTile = null;
+    }
+  }
 
   document.querySelectorAll(".pill[data-sub]").forEach((p) => {
     p.onclick = () => {
@@ -232,6 +298,7 @@
       ctx.restore();
     }
     renderHomePreview();
+    updateCanvasStartPanel();
   }
 
   function saveDraft() {
@@ -1912,7 +1979,8 @@
       card.querySelector("[data-send-clk]").onclick = () => {
         $("hwClkShape").value = id;
         renderHwClockGallery();
-        $("btnHwClkSend").click();
+        const freshCard = grid.querySelector(`[data-send-clk="${id}"]`)?.closest(".clock-card") || card;
+        withTileProgress(freshCard, () => sendHwClock());
       };
       grid.appendChild(card);
     });
@@ -1923,7 +1991,7 @@
   $("hwClkAccent").onchange = renderHwClockGallery;
   renderHwClockGallery();
 
-  $("btnHwClkSend").onclick = async () => {
+  async function sendHwClock() {
     try {
       const res = await api("/api/hw_text_clock", {
         method: "POST",
@@ -1938,7 +2006,8 @@
       });
       recordSent(`HW Clock: ${res.shape}`); toast(`Uploaded live RTC clock (${res.wire_frames} frames)`);
     } catch (err) { toast(err.message); }
-  };
+  }
+  $("btnHwClkSend").onclick = () => sendHwClock();
   $("btnFwClkApply").onclick = () => sendCtrl({ action: "clock", sync_first: true, style: Number($("fwClkFmt").value) || 0, clock_style: 0, date_style: 0, color: $("fwClkCol").value }, "Firmware clock applied");
 
   $("btnGameLaunch").onclick = () => sendCtrl({ action: "game_launch", game_id: Number($("selGameId").value) }, "Game launched");
@@ -1956,12 +2025,12 @@
         tile.innerHTML = `<img src="${safeUrl(g.url)}" alt="${esc(label)}" /><div class="art-tile-name">${esc(g.emoji ? `${g.emoji} ${label}` : label)}</div>`;
         const b = document.createElement("button");
         b.className = "btn sm primary full"; b.textContent = "Send";
-        b.onclick = async () => {
+        b.onclick = () => withTileProgress(tile, async () => {
           try {
             const res = await api("/api/gif_pack/send", { method: "POST", body: JSON.stringify({ file: g.file }) });
             recordSent(label); toast(`Sent ${label} (${res.wire_frames} frames)`);
           } catch (err) { toast(err.message); }
-        };
+        });
         tile.appendChild(b); grid.appendChild(tile);
       });
     } catch (_) {}
@@ -2186,35 +2255,35 @@
       if ($(id)) $(id).classList.toggle("active", id === activeId);
     });
   }
-  if ($("pinCalClock")) $("pinCalClock").onclick = async () => {
+  if ($("pinCalClock")) $("pinCalClock").onclick = () => withTileProgress($("pinCalClock"), async () => {
     markPinned("pinCalClock");
     try {
       const res = await api("/api/calendar_clock", { method: "POST", body: "{}" });
       const ev = res.event;
       toast(ev ? `Calendar Clock: ${ev.title} (${ev.minutes_left}m)` : "Calendar Clock: Free Day");
     } catch (err) { toast(err.message); }
-  };
-  if ($("pinWxClock")) $("pinWxClock").onclick = async () => {
+  });
+  if ($("pinWxClock")) $("pinWxClock").onclick = () => withTileProgress($("pinWxClock"), async () => {
     markPinned("pinWxClock");
     try {
       const res = await api("/api/weather_clock", { method: "POST", body: "{}" });
       toast(`Weather Clock: ${res.weather.city} ${res.weather.temp_c}°C`);
     } catch (err) { toast(err.message); }
-  };
-  if ($("pinOnAir")) $("pinOnAir").onclick = async () => {
+  });
+  if ($("pinOnAir")) $("pinOnAir").onclick = () => withTileProgress($("pinOnAir"), async () => {
     markPinned("pinOnAir");
     try {
       await api("/api/gif_pack/send", { method: "POST", body: JSON.stringify({ filename: "11_mode_on_air_meeting.gif" }) });
       toast("Switched → ON AIR 🔴");
     } catch (err) { toast(err.message); }
-  };
-  if ($("pinCoding")) $("pinCoding").onclick = async () => {
+  });
+  if ($("pinCoding")) $("pinCoding").onclick = () => withTileProgress($("pinCoding"), async () => {
     markPinned("pinCoding");
     try {
       await api("/api/gif_pack/send", { method: "POST", body: JSON.stringify({ filename: "10_mode_coding.gif" }) });
       toast("Switched → Coding Mode");
     } catch (err) { toast(err.message); }
-  };
+  });
   if ($("btnHomeHydrate")) $("btnHomeHydrate").onclick = async () => {
     try {
       await api("/api/hydration_now", { method: "POST", body: JSON.stringify({ duration_s: 10 }) });
@@ -2508,11 +2577,13 @@
             $("transferLabel").textContent = `${t.label || "Uploading"} (${t.profile})`;
             $("transferFill").style.width = `${t.percent}%`;
             $("transferMeta").textContent = `${t.sent_frames}/${t.total_frames} frames · ${t.percent}% · ETA ${t.eta_s}s`;
+            if (activeSendingTile) setTileProgressText(activeSendingTile, `Sending… ${t.percent}%`);
           } else if (t.error) {
             $("transferBar").classList.add("hidden");
           } else {
             $("transferFill").style.width = "100%";
             $("transferMeta").textContent = `Done (${t.measured_bps} B/s)`;
+            if (activeSendingTile) setTileProgressText(activeSendingTile, "Sending… 100%");
             setTimeout(() => $("transferBar").classList.add("hidden"), 900);
           }
         }
@@ -2559,7 +2630,7 @@
       btn.type = "button";
       btn.className = "quick-mode-btn";
       btn.innerHTML = `<img src="${m.img}" alt="${m.label}" /><span>${m.label}</span>`;
-      btn.onclick = async () => {
+      btn.onclick = () => withTileProgress(btn, async () => {
         try {
           if (m.kind === "gif") {
             await api("/api/gif_pack/send", { method: "POST", body: JSON.stringify({ file: m.target }) });
@@ -2569,7 +2640,7 @@
           recordSent(m.label);
           toast(`Switched to ${m.label}`);
         } catch (err) { toast(err.message); }
-      };
+      });
       grid.appendChild(btn);
     });
   }
