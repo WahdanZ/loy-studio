@@ -12,9 +12,12 @@ import argparse
 import asyncio
 import base64
 import datetime
+import functools
 import hashlib
 import io
+import ipaddress
 import json
+import logging
 import math
 import os
 import re
@@ -30,7 +33,7 @@ import urllib.parse
 import urllib.request
 from collections import deque
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional, Set
+from typing import Any, Callable, Deque, Dict, List, Optional, Set
 
 from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
 from PIL import Image, ImageDraw, ImageSequence
@@ -40,7 +43,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from protocol import (
-    BLE_PROFILES,
+    ALL_PROFILES,
+    EXPERIMENTAL_PROFILES,
     BLE_NOTIFY_CHAR_UUID,
     BLE_SERVICE_UUID,
     BLE_WRITE_CHAR_UUID,
@@ -91,6 +95,9 @@ from app.creative import (
     get_macos_now_playing,
     process_image_studio,
 )
+from app.security import LanAuthStore, LoginRateLimiter, host_allowed, same_origin
+from app.storage import atomic_write_json, read_json
+from app.update_signing import verify_release
 from app.smart_features import (
     detect_mac_context,
     fetch_open_meteo_weather,
@@ -103,6 +110,8 @@ from app.smart_features import (
     render_weather_clock_bg_gif,
 )
 
+log = logging.getLogger("loy.server")
+
 BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))
 STATIC_DIR = BUNDLE_ROOT / "app" / "static"
 GIFS_DIR = BUNDLE_ROOT / "gifs"
@@ -110,6 +119,11 @@ GIFS_DIR = BUNDLE_ROOT / "gifs"
 
 def _resolve_data_dir() -> Path:
     """Use a persistent data folder outside the .app bundle when frozen, or `app/` in dev."""
+    override = os.environ.get("LOY_DATA_DIR", "").strip()
+    if override:  # tests / custom installs
+        target = Path(override).expanduser()
+        target.mkdir(parents=True, exist_ok=True)
+        return target
     if getattr(sys, "frozen", False):
         exe_path = Path(sys.executable).resolve()
         app_bundle = next((p for p in exe_path.parents if p.suffix == ".app"), None)
@@ -152,47 +166,38 @@ def _resolve_data_dir() -> Path:
 
 DATA_DIR = _resolve_data_dir()
 LIBRARY_FILE = DATA_DIR / "local_library.json"
-TOKEN_FILE = DATA_DIR / ".pairing_token"
 LAST_DEVICE_FILE = DATA_DIR / ".last_device.json"
 SCHEDULE_FILE = DATA_DIR / "work_schedule.json"
 SMART_CONFIG_FILE = DATA_DIR / "smart_config.json"
 LAN_AUTH_FILE = DATA_DIR / ".lan_auth.json"
 GH_TOKEN_FILE = DATA_DIR / ".github_token"
 NOW_PLAYING_FILE = DATA_DIR / ".now_playing.json"
+DISPLAY_STATE_FILE = DATA_DIR / ".display_state.json"
+USER_GIFS_DIR = DATA_DIR / "user_gifs"  # GIFs saved by the user (never inside the read-only app bundle)
+
+# ---------------------------------------------------------------------------
+# Program slot map (CLAUDE.md constraint 3). The ONLY place slot numbers are defined.
+#   1 <-> 2 : live double-buffer (upload hidden slot, then switch atomically)
+#   3       : RAM-only temporary alerts (Drink Water, webhooks, meetings)
+#   4..8    : on-device Flash schedule programs (TLV 0x16 PERIOD_PRO)
+#   9       : RAM-only throughput benchmark scratch slot
+# ---------------------------------------------------------------------------
+LIVE_SLOTS = (1, 2)
+ALERT_SLOT = 3
+SCHEDULE_SLOTS = (4, 5, 6, 7, 8)
+BENCHMARK_SLOT = 9
+# Automatic refreshes (weather/calendar re-renders, auto-cycle, context switches, Mac
+# scheduler) are written to RAM so they do not wear out the panel's Flash. Anything the
+# user sends by hand persists to Flash so it survives a power cycle.
+AUTO_REFRESH_PERSIST = False
+MAX_DIM = 128
+MAX_FRAMES = 120
 APP_VERSION = "4.3.3"
 GITHUB_REPO = "WahdanZ/loy-studio"
 
 
-def _hash_password(password: str, salt: str) -> str:
-    return hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
-
-
-def _load_lan_auth() -> Dict[str, Any]:
-    if LAN_AUTH_FILE.exists():
-        try:
-            data = json.loads(LAN_AUTH_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and "salt" in data and "hash" in data:
-                return data
-        except Exception:
-            pass
-    salt = secrets.token_hex(12)
-    data = {
-        "enabled": True,
-        "salt": salt,
-        "hash": _hash_password("1234", salt),
-        "session_secret": secrets.token_urlsafe(24),
-        "is_default": True,
-    }
-    _save_lan_auth(data)
-    return data
-
-
-def _save_lan_auth(data: Dict[str, Any]) -> None:
-    LAN_AUTH_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    try:
-        LAN_AUTH_FILE.chmod(0o600)
-    except OSError:
-        pass
+LAN_AUTH = LanAuthStore(LAN_AUTH_FILE)
+LOGIN_LIMITER = LoginRateLimiter()
 
 DEFAULT_SMART_CONFIG: Dict[str, Any] = {
     "context_enabled": False,
@@ -214,7 +219,8 @@ DEFAULT_SMART_CONFIG: Dict[str, Any] = {
 DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 DEFAULT_WORK_SCHEDULE: Dict[str, Any] = {
-    "enabled": True,
+    # Off until the user turns it on: a fresh install must not override what they just picked.
+    "enabled": False,
     "rules": [
         {"id": "wk_coffee", "enabled": True, "name": "Morning Coffee", "days": ["mon", "tue", "wed", "thu", "fri"], "start": "08:00", "end": "09:00", "kind": "gif", "target": "13_mode_coffee_break.gif", "brightness": 10},
         {"id": "wk_focus", "enabled": True, "name": "Deep Focus", "days": ["mon", "tue", "wed", "thu", "fri"], "start": "09:00", "end": "12:00", "kind": "gif", "target": "09_mode_deep_focus.gif", "brightness": 12},
@@ -227,20 +233,6 @@ DEFAULT_WORK_SCHEDULE: Dict[str, Any] = {
         {"id": "night_done", "enabled": True, "name": "Night / Done", "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], "start": "22:30", "end": "08:00", "kind": "gif", "target": "18_mode_done_offline.gif", "brightness": 2},
     ],
 }
-
-
-def _load_or_create_token() -> str:
-    if TOKEN_FILE.exists():
-        tok = TOKEN_FILE.read_text(encoding="utf-8").strip()
-        if len(tok) >= 16:
-            return tok
-    tok = secrets.token_urlsafe(18)
-    TOKEN_FILE.write_text(tok, encoding="utf-8")
-    try:
-        TOKEN_FILE.chmod(0o600)
-    except OSError:
-        pass
-    return tok
 
 
 def _detect_lan_ip() -> str:
@@ -280,15 +272,45 @@ class ControllerState:
         self._load_now_playing()
         self.lock = asyncio.Lock()
         self.ws_clients: Dict[web.WebSocketResponse, Dict[str, Any]] = {}
-        self.pairing_token: str = _load_or_create_token()
         self.lan_enabled: bool = False
         self.bound_port: int = 18420
         self.auto_reconnect: bool = False
         self.in_modal_mode: bool = False  # True when panel is in built-in Clock/Timer/Scoreboard/Game mode
-        self.active_slot: int = 1  # Double-buffering ping-pong slot (1 <-> 2) for zero-flicker transitions
+        self.active_slot: int = LIVE_SLOTS[0]  # visible live slot (1 <-> 2 ping-pong)
+        self.temp_alert_active: bool = False  # RAM Slot 3 alert currently on screen
+        self.alert_brightness_changed: bool = False
+        self.device_schedule_active: bool = False  # on-device Flash schedule currently driving the panel
+        self.notify_restore_task: Optional[asyncio.Task] = None
+        self.context_override: Optional[str] = None
+        self.weather_cache: Optional[Dict[str, Any]] = None
+        self.last_applied_rule_id: Optional[str] = None
         self.last_ble_address: Optional[str] = None
         self.last_ble_name: Optional[str] = None
         self._load_last_device()
+        self._load_display_state()
+
+    def _load_display_state(self) -> None:
+        """Restore what the panel was showing, so the first upload after a restart never hits the visible slot."""
+        d = read_json(DISPLAY_STATE_FILE, dict, validate=lambda x: isinstance(x, dict))
+        slot = d.get("active_slot")
+        if slot in LIVE_SLOTS:
+            self.active_slot = slot
+        self.in_modal_mode = bool(d.get("in_modal_mode", False))
+        self.temp_alert_active = bool(d.get("temp_alert_active", False))
+        self.alert_brightness_changed = bool(d.get("alert_brightness_changed", False))
+        self.device_schedule_active = bool(d.get("device_schedule_active", False))
+
+    def save_display_state(self) -> None:
+        try:
+            atomic_write_json(DISPLAY_STATE_FILE, {
+                "active_slot": self.active_slot,
+                "in_modal_mode": self.in_modal_mode,
+                "temp_alert_active": self.temp_alert_active,
+                "alert_brightness_changed": self.alert_brightness_changed,
+                "device_schedule_active": self.device_schedule_active,
+            })
+        except OSError:
+            log.exception("Could not save display state")
 
     def _load_last_device(self) -> None:
         if LAST_DEVICE_FILE.exists():
@@ -303,14 +325,9 @@ class ControllerState:
         self.last_ble_address = address
         self.last_ble_name = name
         try:
-            LAST_DEVICE_FILE.write_text(json.dumps({"address": address, "name": name}), encoding="utf-8")
-        except Exception:
-            pass
-
-    def rotate_token(self) -> str:
-        self.pairing_token = secrets.token_urlsafe(18)
-        TOKEN_FILE.write_text(self.pairing_token, encoding="utf-8")
-        return self.pairing_token
+            atomic_write_json(LAST_DEVICE_FILE, {"address": address, "name": name}, indent=None)
+        except OSError:
+            log.exception("Could not save last BLE device")
 
     async def broadcast(self, event: str, data: Any) -> None:
         if not self.ws_clients:
@@ -353,11 +370,9 @@ class ControllerState:
             lambda prog: self.broadcast_soon("transfer_update", prog.to_dict())
         )
 
-    def next_back_slot(self, requested_slot: Optional[int] = None) -> int:
-        """Pick the hidden back-buffer slot (1 <-> 2) so current display stays visible during BLE upload."""
-        if requested_slot is not None and requested_slot > 2:
-            return requested_slot
-        return 2 if self.active_slot == 1 else 1
+    def next_back_slot(self) -> int:
+        """Hidden back-buffer slot (1 <-> 2). Only call while holding `self.lock`."""
+        return LIVE_SLOTS[1] if self.active_slot == LIVE_SLOTS[0] else LIVE_SLOTS[0]
 
     def _load_now_playing(self) -> None:
         if NOW_PLAYING_FILE.exists():
@@ -391,9 +406,9 @@ class ControllerState:
             "ts": round(time.time(), 1),
         }
         try:
-            NOW_PLAYING_FILE.write_text(json.dumps(self.now_playing), encoding="utf-8")
-        except Exception:
-            pass
+            atomic_write_json(NOW_PLAYING_FILE, self.now_playing, indent=None)
+        except OSError:
+            log.exception("Could not save now playing")
         if record:
             tstr = datetime.datetime.now().strftime("%H:%M:%S")
             self.recent_sent.appendleft({"time": tstr, "title": title, "source": source})
@@ -424,7 +439,7 @@ class ControllerState:
 def _detect_req_source(req: Optional[web.Request]) -> str:
     if req is None:
         return "Auto"
-    hdr = (req.headers.get("X-LOY-Source") or "").strip()
+    hdr = re.sub(r"[^A-Za-z0-9 ._-]", "", req.headers.get("X-LOY-Source") or "").strip()
     if hdr:
         return hdr[:20]
     ua = (req.headers.get("User-Agent") or "").lower()
@@ -451,48 +466,130 @@ def _parse_hex_rgb(hex_color: str) -> tuple[int, int, int]:
     return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
 
 
+def _resolve_gif(name: str) -> Optional[Path]:
+    """Find a GIF by bare file name in the bundled pack or the user's saved GIFs (no path traversal)."""
+    fname = Path(str(name or "")).name
+    if not fname:
+        return None
+    for base in (GIFS_DIR, USER_GIFS_DIR):
+        cand = base / fname
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _gif_url(path: Path) -> str:
+    return f"/user_gifs/{path.name}" if path.parent == USER_GIFS_DIR else f"/gifs/{path.name}"
+
+
+def _all_gif_paths() -> List[Path]:
+    seen: Dict[str, Path] = {}
+    for base in (GIFS_DIR, USER_GIFS_DIR):
+        if base.exists():
+            for g in sorted(base.glob("*.gif")):
+                seen.setdefault(g.name, g)
+    return list(seen.values())
+
+
 async def handle_index(_req: web.Request) -> web.StreamResponse:
     """Serve LOY Studio shell cleanly (no URL pairing tokens)."""
     return web.FileResponse(STATIC_DIR / "index.html")
 
 
 def _is_loopback_req(req: web.Request) -> bool:
-    peer = req.remote or "127.0.0.1"
-    return peer in ("127.0.0.1", "::1", "localhost") or peer.startswith("127.")
+    peer = req.remote or ""
+    return peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1") or peer.startswith("127.")
+
+
+def _req_token(req: web.Request) -> str:
+    tok = req.headers.get("X-LOY-Token") or req.cookies.get("loy_session") or ""
+    # Query-string tokens leak into logs/history; only accept them for the WebSocket upgrade,
+    # where browsers cannot set custom headers.
+    if not tok and req.path == "/ws":
+        tok = req.query.get("token", "")
+    return tok
 
 
 def _is_lan_authenticated(req: web.Request) -> bool:
     if _is_loopback_req(req):
         return True
-    auth = _load_lan_auth()
-    if not auth.get("enabled", True):
-        return True
-    expected = str(auth.get("session_secret", ""))
-    if not expected:
-        return False
-    token = (
-        req.headers.get("X-LOY-Token")
-        or req.query.get("token")
-        or req.cookies.get("loy_session")
-        or ""
-    )
-    return bool(token) and secrets.compare_digest(token, expected)
+    return LAN_AUTH.validate_session(_req_token(req))
+
+
+# Paths a phone on Wi-Fi may never call, even when signed in: they change who can access
+# the Mac or replace the app itself.
+LOOPBACK_ONLY_PREFIXES = (
+    "/api/auth/set_password",
+    "/api/auth/sessions",
+    "/api/update/",
+)
+PUBLIC_PATHS = ("/", "/api/auth/status", "/api/auth/login", "/api/auth/logout")
+_MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob: https:; connect-src 'self' ws: wss:; worker-src 'self'; "
+    "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+)
+
+
+@web.middleware
+async def errors_and_headers_middleware(req: web.Request, handler):
+    """Outermost middleware: map bad input to 400 JSON (no tracebacks) and add security headers."""
+    try:
+        resp = await handler(req)
+    except web.HTTPException as exc:
+        resp = exc
+    except DisplayNotConnected as exc:
+        resp = web.json_response({"error": str(exc)}, status=400)
+    except (ValueError, KeyError, TypeError) as exc:
+        # json.JSONDecodeError is a ValueError
+        log.info("Bad request to %s: %r", req.path, exc)
+        msg = f"Missing field: {exc}" if isinstance(exc, KeyError) else str(exc)
+        resp = web.json_response({"error": msg or "Bad request"}, status=400)
+    except Exception as exc:
+        log.exception("Unhandled error in %s %s", req.method, req.path)
+        resp = web.json_response({"error": f"Internal error: {exc}"}, status=500)
+    if not resp.prepared:
+        resp.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+    if isinstance(resp, web.HTTPException):
+        raise resp
+    return resp
 
 
 @web.middleware
 async def local_auth_middleware(req: web.Request, handler):
     """
-    Protect API & WebSocket endpoints when LAN access is enabled:
-      - Loopback clients (127.0.0.1 / ::1) on your Mac are always trusted.
-      - Non-loopback LAN clients authenticate with your chosen password via /api/auth/login
-        and present the returned session token via X-LOY-Token header, ?token= (WebSocket), or cookie.
+    Request guard for every endpoint:
+      1. Host allowlist (blocks DNS-rebinding from malicious websites).
+      2. Origin must match Host when a browser sends one (blocks CSRF / cross-site WebSocket).
+      3. Mutating requests with a body must be JSON (forces a CORS preflight for browsers).
+      4. Loopback-only paths (password, sessions, updater) are refused from the LAN.
+      5. Non-loopback clients need a valid per-device session token.
     """
-    public_paths = ("/", "/api/auth/status", "/api/auth/login", "/api/auth/logout")
+    if not host_allowed(req.host):
+        return web.json_response({"error": "Forbidden host"}, status=403)
+    origin = req.headers.get("Origin")
+    if origin is not None and not same_origin(origin, req.host):
+        return web.json_response({"error": "Cross-origin request blocked"}, status=403)
+    if req.method in _MUTATING_METHODS and req.body_exists and req.content_type != "application/json":
+        return web.json_response({"error": "Content-Type must be application/json"}, status=415)
+
+    loopback = _is_loopback_req(req)
+    if not loopback and req.path.startswith(LOOPBACK_ONLY_PREFIXES):
+        return web.json_response(
+            {"error": "This action is only available on the Mac running LOY Studio."}, status=403
+        )
     if (
-        _is_loopback_req(req)
-        or req.path in public_paths
+        loopback
+        or req.path in PUBLIC_PATHS
         or req.path.startswith("/static/")
         or req.path.startswith("/gifs/")
+        or req.path.startswith("/user_gifs/")
         or req.path.startswith("/api/hw_clock_preview/")
     ):
         return await handler(req)
@@ -506,52 +603,79 @@ async def local_auth_middleware(req: web.Request, handler):
 
 
 async def handle_auth_status(req: web.Request) -> web.Response:
-    auth = _load_lan_auth()
+    pwd_set = LAN_AUTH.password_set
     return web.json_response({
         "authenticated": _is_lan_authenticated(req),
         "is_local": _is_loopback_req(req),
-        "password_enabled": bool(auth.get("enabled", True)),
-        "is_default_password": bool(auth.get("is_default", False)),
+        "password_enabled": pwd_set,
+        "password_set": pwd_set,
+        "setup_required": not pwd_set,
+        "is_default_password": False,
     })
 
 
 async def handle_auth_login(req: web.Request) -> web.Response:
-    body = await req.json()
+    ip = req.remote or "?"
+    wait = LOGIN_LIMITER.retry_after(ip)
+    if wait > 0:
+        return web.json_response(
+            {"error": f"Too many attempts. Try again in {int(wait) + 1}s."},
+            status=429,
+            headers={"Retry-After": str(int(wait) + 1)},
+        )
+    if not LAN_AUTH.password_set:
+        return web.json_response(
+            {
+                "error": "Phone access is locked. Set a Wi-Fi password on your Mac first (Device → Phone Access).",
+                "setup_required": True,
+            },
+            status=403,
+        )
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
     password = str(body.get("password", ""))
-    auth = _load_lan_auth()
-    if not auth.get("enabled", True):
-        return web.json_response({"ok": True, "token": auth.get("session_secret", "")})
-    if not secrets.compare_digest(_hash_password(password, auth["salt"]), auth["hash"]):
+    # PBKDF2 is deliberately slow: keep it off the event loop
+    ok = await asyncio.to_thread(LAN_AUTH.verify_password, password)
+    if not ok:
+        LOGIN_LIMITER.record_failure(ip)
         return web.json_response({"error": "Incorrect password"}, status=401)
-    token = auth["session_secret"]
+    LOGIN_LIMITER.record_success(ip)
+    token = LAN_AUTH.create_session(ip, req.headers.get("User-Agent", ""))
     resp = web.json_response({"ok": True, "token": token})
-    resp.set_cookie("loy_session", token, httponly=True, samesite="Lax", max_age=86400 * 30)
+    resp.set_cookie("loy_session", token, httponly=True, samesite="Strict", max_age=86400 * 30)
     return resp
 
 
 async def handle_auth_set_password(req: web.Request) -> web.Response:
+    """Loopback-only (enforced by middleware). Empty password = lock phone access."""
     body = await req.json()
     new_pwd = str(body.get("password", "")).strip()
-    auth = _load_lan_auth()
-    if not new_pwd:
-        auth["enabled"] = False
-        auth["is_default"] = False
-    else:
-        salt = secrets.token_hex(12)
-        auth["enabled"] = True
-        auth["salt"] = salt
-        auth["hash"] = _hash_password(new_pwd, salt)
-        auth["session_secret"] = secrets.token_urlsafe(24)
-        auth["is_default"] = False
-    _save_lan_auth(auth)
-    return web.json_response({
-        "ok": True,
-        "password_enabled": auth["enabled"],
-        "token": auth["session_secret"],
-    })
+    try:
+        await asyncio.to_thread(LAN_AUTH.set_password, new_pwd)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    # Every phone session was revoked: disconnect their live WebSockets too
+    for ws, info in list(state.ws_clients.items()):
+        if not info.get("loopback"):
+            await ws.close(code=4401, message=b"password changed")
+    return web.json_response({"ok": True, "password_enabled": LAN_AUTH.password_set})
 
 
-async def handle_auth_logout(_req: web.Request) -> web.Response:
+async def handle_auth_sessions(req: web.Request) -> web.Response:
+    """Loopback-only: list signed-in phones (GET) or revoke one (POST {"id": ...})."""
+    if req.method == "POST":
+        body = await req.json()
+        ok = LAN_AUTH.revoke_session_id(str(body.get("id", "")))
+        return web.json_response({"ok": ok, "sessions": LAN_AUTH.list_sessions()})
+    return web.json_response({"sessions": LAN_AUTH.list_sessions()})
+
+
+async def handle_auth_logout(req: web.Request) -> web.Response:
+    tok = _req_token(req)
+    if tok:
+        LAN_AUTH.revoke_session(tok)
     resp = web.json_response({"ok": True})
     resp.del_cookie("loy_session")
     return resp
@@ -565,6 +689,7 @@ async def handle_ws(req: web.Request) -> web.WebSocketResponse:
     client_info = {
         "ip": req.remote or "127.0.0.1",
         "kind": kind,
+        "loopback": _is_loopback_req(req),
         "ua": ua,
         "connected_at": datetime.datetime.now().strftime("%H:%M:%S"),
     }
@@ -595,23 +720,18 @@ async def handle_phone_connect(_req: web.Request) -> web.Response:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     qr_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    auth = _load_lan_auth()
     return web.json_response({
         "lan_enabled": state.lan_enabled,
         "lan_ip": lan_ip,
         "port": port,
         "url": url,
         "base_url": url,
-        "password_enabled": bool(auth.get("enabled", True)),
-        "is_default_password": bool(auth.get("is_default", False)),
+        "password_enabled": LAN_AUTH.password_set,
+        "password_set": LAN_AUTH.password_set,
+        "is_default_password": False,
         "qr_png_b64": qr_b64,
         "clients": state.clients_list(),
     })
-
-
-async def handle_rotate_token(_req: web.Request) -> web.Response:
-    state.rotate_token()
-    return await handle_phone_connect(_req)
 
 
 async def handle_status(_req: web.Request) -> web.Response:
@@ -622,11 +742,19 @@ async def handle_packets(_req: web.Request) -> web.Response:
     return web.json_response({"packets": list(state.packet_log)})
 
 
+_scan_lock = asyncio.Lock()
+
+
 async def handle_scan(req: web.Request) -> web.Response:
     include_all = req.query.get("all", "0") == "1"
-    timeout = float(req.query.get("timeout", "4.0"))
+    timeout = max(1.0, min(15.0, float(req.query.get("timeout", "4.0"))))
+    if _scan_lock.locked():
+        return web.json_response({"error": "A scan is already running", "devices": []}, status=409)
+    if state.transport is not None and state.transport.transfer.active:
+        return web.json_response({"error": "Wait for the current upload to finish before scanning", "devices": []}, status=409)
     try:
-        devices = await BleTransport.scan(timeout=timeout, include_all=include_all)
+        async with _scan_lock:
+            devices = await BleTransport.scan(timeout=timeout, include_all=include_all)
         return web.json_response(
             {
                 "devices": [
@@ -686,9 +814,15 @@ async def handle_connect(req: web.Request) -> web.Response:
                 state.save_last_device(address, name)
             else:
                 state.auto_reconnect = False
+            await _resync_after_connect()
             state.broadcast_soon("status_update", state.status_dict())
             return web.json_response(state.status_dict())
         except Exception as exc:
+            # Never leave a half-open BLE link if the post-connect handshake failed (CLAUDE.md #5)
+            try:
+                await transport.disconnect()
+            except Exception:
+                log.exception("Cleanup disconnect after failed connect failed")
             state.transport = None
             state.mode = "disconnected"
             return web.json_response({"error": str(exc)}, status=500)
@@ -708,28 +842,176 @@ async def handle_disconnect(_req: web.Request) -> web.Response:
         return web.json_response(state.status_dict())
 
 
-async def _ensure_exit_modal_mode(clear_temp_alert: bool = True) -> None:
-    """Exit built-in Clock / Countdown / Stopwatch / Scoreboard / Game mode and any active temporary alert (Slot 2) before uploading."""
-    if clear_temp_alert:
-        prev_task = getattr(state, "_notify_restore_task", None)
-        if prev_task and not prev_task.done():
-            prev_task.cancel()
-            state._notify_restore_task = None
-        if getattr(state, "_temp_alert_active", False) and state.transport and state.transport.is_connected:
-            try:
-                t = state.transport
-                await t.send_frame(cmd_delete_programs([3], sno=t.next_sno()))
-                await t.send_frame(cmd_dispatch_program(state.active_slot, sno=t.next_sno()))
-                await t.send_frame(cmd_pgm_play(model=1, index=(state.active_slot - 1) & 0xFF, sno=t.next_sno()))
-            except Exception:
-                pass
-            state._temp_alert_active = False
-    if state.in_modal_mode and state.transport and state.transport.is_connected:
+class DisplayNotConnected(RuntimeError):
+    """Raised when a display operation needs a connected panel."""
+
+    def __init__(self, msg: str = "Not connected to display") -> None:
+        super().__init__(msg)
+
+
+def _require_transport() -> Any:
+    t = state.transport
+    if t is None or not t.is_connected:
+        raise DisplayNotConnected()
+    return t
+
+
+def _clamp_dims(body: Dict[str, Any]) -> tuple[int, int]:
+    w = max(8, min(MAX_DIM, int(body.get("width", state.width))))
+    h = max(8, min(MAX_DIM, int(body.get("height", state.height))))
+    return w, h
+
+
+def _decode_frames(frames_b64: Any, width: int, height: int) -> List[bytes]:
+    if not isinstance(frames_b64, list) or not frames_b64:
+        raise ValueError("No frames provided")
+    if len(frames_b64) > MAX_FRAMES:
+        raise ValueError(f"Too many frames ({len(frames_b64)} > {MAX_FRAMES})")
+    expected = width * height * 3
+    out: List[bytes] = []
+    for b64 in frames_b64:
+        raw = base64.b64decode(b64)
+        if len(raw) != expected:
+            raise ValueError(f"Frame is {len(raw)} bytes; expected {expected} for {width}x{height} RGB")
+        out.append(raw)
+    return out
+
+
+def _cancel_alert_restore() -> None:
+    """Cancel the pending alert auto-restore. Call only while holding `state.lock`, so the
+    restore task is either sleeping or waiting for the lock (never half-way through BLE frames)."""
+    task = state.notify_restore_task
+    state.notify_restore_task = None
+    if task is not None and not task.done() and task is not asyncio.current_task():
+        task.cancel()
+
+
+async def _exit_modal_mode() -> None:
+    """Leave built-in Clock / Countdown / Scoreboard / Game mode. Caller holds `state.lock`."""
+    t = state.transport
+    if state.in_modal_mode and t is not None and t.is_connected:
         try:
-            await state.transport.send_frame(cmd_game_action("exit", sno=state.transport.next_sno()))
-        except Exception:
-            pass
+            await t.send_frame(cmd_game_action("exit", sno=t.next_sno()))
+        except Exception as exc:
+            log.warning("Exiting built-in mode failed: %s", exc)
         state.in_modal_mode = False
+        state.save_display_state()
+
+
+async def _end_temp_alert(*, restore_previous: bool) -> None:
+    """
+    End the RAM Slot 3 alert. Caller holds `state.lock`.
+    restore_previous=True switches back to the visible live slot first, THEN deletes Slot 3,
+    so the panel never shows an empty program (zero flicker).
+    """
+    _cancel_alert_restore()
+    if not state.temp_alert_active:
+        return
+    t = state.transport
+    if t is None or not t.is_connected:
+        return  # keep the flag; _resync_after_connect() finishes the restore later
+    try:
+        if state.alert_brightness_changed:
+            await t.send_frame(cmd_set_brightness(max(1, min(15, int(state.brightness))), sno=t.next_sno()))
+        if restore_previous:
+            await t.send_frame(cmd_dispatch_program(state.active_slot, sno=t.next_sno()))
+            await t.send_frame(cmd_pgm_play(model=1, index=(state.active_slot - 1) & 0xFF, sno=t.next_sno()))
+        await t.send_frame(cmd_delete_programs([ALERT_SLOT], sno=t.next_sno()))
+    except Exception as exc:
+        log.warning("Ending temporary alert failed: %s", exc)
+    state.temp_alert_active = False
+    state.alert_brightness_changed = False
+    state.save_display_state()
+
+
+async def _ensure_exit_modal_mode(clear_temp_alert: bool = True) -> None:
+    """Exit any built-in mode and (optionally) a temporary alert. Caller holds `state.lock`."""
+    if clear_temp_alert:
+        await _end_temp_alert(restore_previous=True)
+    await _exit_modal_mode()
+
+
+async def _resync_after_connect() -> None:
+    """After (re)connecting: finish an alert restore that a disconnect interrupted. Caller holds `state.lock`."""
+    if state.temp_alert_active:
+        await _end_temp_alert(restore_previous=True)
+
+
+def _reserve_snos(t: Any, frames: List[bytes]) -> None:
+    """Builders number frames start_sno..start_sno+N-1; advance the transport past that block."""
+    for _ in range(max(0, len(frames) - 1)):
+        t.next_sno()
+
+
+async def present_program(
+    builder: Callable[..., List[bytes]],
+    *,
+    label: str,
+    persist: bool = True,
+    sync_time: bool = False,
+    now_playing: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    The single path for putting new content on the panel (CLAUDE.md constraint 3):
+      1. under `state.lock`: cancel any alert restore and leave built-in modes,
+      2. pick the hidden back slot (1 <-> 2) INSIDE the lock (no races between clients),
+      3. upload silently (show_now=False) to RAM or Flash,
+      4. switch atomically: dispatch + pgm_play(model=1),
+      5. then delete an alert that was on screen (no intermediate flash),
+      6. persist slot state and update the live mirror for every client.
+
+    `builder(program_id=, start_sno=, show_now=, data_save=)` returns the wire frames.
+    """
+    _require_transport()
+    async with state.lock:
+        t = _require_transport()
+        alert_was_active = state.temp_alert_active
+        _cancel_alert_restore()
+        await _exit_modal_mode()
+        slot = state.next_back_slot()
+        try:
+            if sync_time:
+                await t.send_frame(cmd_sync_time(sno=t.next_sno()))
+            frames = builder(
+                program_id=slot,
+                start_sno=t.next_sno(),
+                show_now=False,
+                data_save=0 if persist else 1,
+            )
+            _reserve_snos(t, frames)
+            res = await t.send_frames(frames, label=label)
+            await t.send_frame(cmd_dispatch_program(slot, sno=t.next_sno()))
+            await t.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=t.next_sno()))
+        except BaseException:
+            # The old content (or alert) is still on screen; put the alert away cleanly.
+            if alert_was_active:
+                try:
+                    await _end_temp_alert(restore_previous=True)
+                except Exception:
+                    log.exception("Alert cleanup after failed upload failed")
+            raise
+        state.active_slot = slot
+        state.device_schedule_active = False  # a pinned single program overrides the on-device schedule
+        if alert_was_active:
+            await _end_temp_alert(restore_previous=False)
+        state.save_display_state()
+    if now_playing:
+        state.set_now_playing(**now_playing)
+    return {"ok": True, "slot": slot, "wire_frames": len(frames), "last_ack": res[-1] if res else None}
+
+
+async def _present_or_error(builder: Callable[..., List[bytes]], out: Optional[Dict[str, Any]] = None, **kwargs: Any) -> web.Response:
+    """Run present_program() and map errors to JSON responses (400 if not connected)."""
+    try:
+        res = await present_program(builder, **kwargs)
+    except DisplayNotConnected as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        log.exception("Upload '%s' failed", kwargs.get("label"))
+        return web.json_response({"error": str(exc)}, status=500)
+    payload = dict(out or {})
+    payload.update(res)
+    return web.json_response(payload)
 
 
 async def handle_control(req: web.Request) -> web.Response:
@@ -749,7 +1031,11 @@ async def handle_control(req: web.Request) -> web.Response:
                 await t.send_frame(cmd_sync_time(sno=t.next_sno()))
                 res = await t.send_frame(cmd_set_power_schedule(periods, sno=t.next_sno()))
             elif action == "brightness":
-                lvl = max(1, min(15, int(body["level"])))
+                # Accept legacy `value` key too (older Menu Bar / Matter / editor clients)
+                raw_lvl = body.get("level", body.get("value"))
+                if raw_lvl is None:
+                    return web.json_response({"error": "Missing brightness 'level' (1-15)"}, status=400)
+                lvl = max(1, min(15, int(raw_lvl)))
                 res = await t.send_frame(cmd_set_brightness(lvl, sno=t.next_sno()))
                 state.brightness = lvl
             elif action == "brightness_schedule":
@@ -786,6 +1072,7 @@ async def handle_control(req: web.Request) -> web.Response:
                 else:
                     res = await t.send_frame(cmd_set_clock_mode(fmt=fmt, sno=t.next_sno()))
                 state.in_modal_mode = True
+                state.save_display_state()
             elif action == "countdown":
                 res = await t.send_frame(
                     cmd_set_countdown(
@@ -796,18 +1083,34 @@ async def handle_control(req: web.Request) -> web.Response:
                     )
                 )
                 state.in_modal_mode = True
+                state.save_display_state()
             elif action == "scoreboard":
                 res = await t.send_frame(
                     cmd_set_scoreboard(int(body.get("red", 0)), int(body.get("blue", 0)), sno=t.next_sno())
                 )
                 state.in_modal_mode = True
+                state.save_display_state()
             elif action == "delete_all":
+                _cancel_alert_restore()
                 res = await t.send_frame(cmd_delete_all(sno=t.next_sno()))
+                state.active_slot = LIVE_SLOTS[0]
+                state.temp_alert_active = False
+                state.device_schedule_active = False
+                state.save_display_state()
+                state.set_now_playing("idle", "Display cleared", subtitle="All programs deleted", record=False)
             elif action == "delete_slots":
-                ids = [int(x) for x in body["slots"]]
+                ids = [int(x) for x in body["slots"] if 1 <= int(x) <= 255]
                 res = await t.send_frame(cmd_delete_programs(ids, sno=t.next_sno()))
+                if state.active_slot in ids:
+                    state.set_now_playing("idle", "Slot deleted", subtitle=f"Slot {state.active_slot} was removed", record=False)
             elif action == "dispatch_slot":
-                res = await t.send_frame(cmd_dispatch_program(int(body["slot"]), sno=t.next_sno()))
+                slot_n = int(body["slot"])
+                if not 1 <= slot_n <= 255:
+                    return web.json_response({"error": "slot must be 1..255"}, status=400)
+                res = await t.send_frame(cmd_dispatch_program(slot_n, sno=t.next_sno()))
+                if slot_n in LIVE_SLOTS:
+                    state.active_slot = slot_n
+                    state.save_display_state()
             elif action == "pgm_play":
                 ids = [int(x) for x in body.get("slots", [])] if body.get("slots") else None
                 res = await t.send_frame(
@@ -823,6 +1126,7 @@ async def handle_control(req: web.Request) -> web.Response:
             elif action == "game_launch":
                 res = await t.send_frame(cmd_game_launch(int(body["game_id"]), sno=t.next_sno()))
                 state.in_modal_mode = True
+                state.save_display_state()
             elif action == "game_opt":
                 res = await t.send_frame(cmd_game_action(body["opt"], sno=t.next_sno(), unack=False))
                 if body["opt"] == "exit":
@@ -866,6 +1170,8 @@ async def handle_control(req: web.Request) -> web.Response:
                     )
                 )
             elif action == "ble_password":
+                if not _is_loopback_req(req):
+                    return web.json_response({"error": "BLE password can only be changed on the Mac."}, status=403)
                 res = await t.send_frame(
                     cmd_set_ble_password(
                         pwd_type=int(body.get("pwd_type", 2)),
@@ -901,153 +1207,115 @@ async def handle_control(req: web.Request) -> web.Response:
 
 async def handle_upload_frames(req: web.Request) -> web.Response:
     """Upload one or more RGB frames from the Pixel Art / Animation Editor."""
-    if not state.transport or not state.transport.is_connected:
-        return web.json_response({"error": "Not connected"}, status=400)
     body = await req.json()
-    width = int(body.get("width", state.width))
-    height = int(body.get("height", state.height))
-    slot = state.next_back_slot(int(body["slot"]) if "slot" in body else None)
+    width, height = _clamp_dims(body)
     speed = int(body.get("speed", 9))
-    frames_b64: List[str] = body["frames"]
-
-    frames_rgb = [base64.b64decode(b) for b in frames_b64]
+    frames_rgb = _decode_frames(body.get("frames"), width, height)
     ystp = encode_ystp01(frames_rgb, width, height)
-    async with state.lock:
-        try:
-            await _ensure_exit_modal_mode()
-            wire_frames = build_image_program_frames(
-                ystp,
-                width,
-                height,
-                program_id=slot,
-                start_sno=state.transport.next_sno(),
-                speed=speed,
-                time_stay=0 if len(frames_rgb) > 1 else 3,
-                show_now=False,
-            )
-            res = await state.transport.send_frames(wire_frames)
-            await state.transport.send_frame(cmd_dispatch_program(slot, sno=state.transport.next_sno()))
-            await state.transport.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=state.transport.next_sno()))
-            if slot in (1, 2):
-                state.active_slot = slot
-            try:
-                pbuf = io.BytesIO()
-                Image.frombytes("RGB", (width, height), frames_rgb[0]).save(pbuf, format="PNG")
-                prev_uri = "data:image/png;base64," + base64.b64encode(pbuf.getvalue()).decode("ascii")
-            except Exception:
-                prev_uri = ""
-            src = _detect_req_source(req)
-            state.set_now_playing(
-                "canvas", f"Custom Pixel Art ({len(frames_rgb)}f)",
-                subtitle=f"64×64 Canvas · via {src}", preview_url=prev_uri, source=src,
-            )
-            return web.json_response(
-                {"ok": True, "ystp_bytes": len(ystp), "wire_frames": len(wire_frames), "last_ack": res[-1]}
-            )
-        except Exception as exc:
-            return web.json_response({"error": str(exc)}, status=500)
+    try:
+        pbuf = io.BytesIO()
+        Image.frombytes("RGB", (width, height), frames_rgb[0]).save(pbuf, format="PNG")
+        prev_uri = "data:image/png;base64," + base64.b64encode(pbuf.getvalue()).decode("ascii")
+    except Exception:
+        prev_uri = ""
+    src = _detect_req_source(req)
+    builder = functools.partial(
+        build_image_program_frames, ystp, width, height,
+        speed=speed, time_stay=0 if len(frames_rgb) > 1 else 3,
+    )
+    return await _present_or_error(
+        builder,
+        {"ystp_bytes": len(ystp)},
+        label=f"Canvas ({len(frames_rgb)}f)",
+        now_playing=dict(
+            kind="canvas", title=f"Custom Pixel Art ({len(frames_rgb)}f)",
+            subtitle=f"64×64 Canvas · via {src}", preview_url=prev_uri, source=src,
+        ),
+    )
 
 
 async def handle_upload_media(req: web.Request) -> web.Response:
     """Import PNG/JPG/BMP/GIF file, auto-resize or passthrough GIF, and send to display."""
-    if not state.transport or not state.transport.is_connected:
-        return web.json_response({"error": "Not connected"}, status=400)
     body = await req.json()
     raw = base64.b64decode(body["data_b64"])
-    slot = int(body.get("slot", 1))
     passthrough_gif = bool(body.get("passthrough_gif", True))
-
-    async with state.lock:
-        try:
-            if passthrough_gif and raw.startswith(b"GIF"):
-                wire_frames = build_gif_program_frames(
-                    raw,
-                    state.width,
-                    state.height,
-                    program_id=slot,
-                    start_sno=state.transport.next_sno(),
-                )
-            else:
-                with Image.open(io.BytesIO(raw)) as img:
-                    ystp = pil_image_to_ystp01(img, state.width, state.height)
-                wire_frames = build_image_program_frames(
-                    ystp,
-                    state.width,
-                    state.height,
-                    program_id=slot,
-                    start_sno=state.transport.next_sno(),
-                )
-            res = await state.transport.send_frames(wire_frames)
-            return web.json_response({"ok": True, "wire_frames": len(wire_frames), "last_ack": res[-1]})
-        except Exception as exc:
-            return web.json_response({"error": str(exc)}, status=500)
+    w, h = state.width, state.height
+    if passthrough_gif and raw.startswith(b"GIF"):
+        builder = functools.partial(build_gif_program_frames, raw, w, h)
+        preview = "data:image/gif;base64," + base64.b64encode(raw).decode("ascii")
+    else:
+        with Image.open(io.BytesIO(raw)) as img:
+            ystp = pil_image_to_ystp01(img, w, h)
+        builder = functools.partial(build_image_program_frames, ystp, w, h)
+        preview = ""
+    src = _detect_req_source(req)
+    return await _present_or_error(
+        builder,
+        label="Imported media",
+        now_playing=dict(kind="canvas", title="Imported Media", subtitle=f"via {src}", preview_url=preview, source=src),
+    )
 
 
 async def handle_send_text(req: web.Request) -> web.Response:
-    if not state.transport or not state.transport.is_connected:
-        return web.json_response({"error": "Not connected"}, status=400)
     body = await req.json()
-    msg = body.get("text", "").strip()
+    msg = str(body.get("text", "")).strip()
     if not msg:
         return web.json_response({"error": "Text cannot be empty"}, status=400)
+    if len(msg) > 500:
+        return web.json_response({"error": "Text is too long (max 500 characters)"}, status=400)
     fg = _parse_hex_rgb(body.get("color", "#ffffff"))
     bg = _parse_hex_rgb(body.get("bg", "#000000"))
-    scroll = body.get("scroll", "left")
-    speed = int(body.get("speed", 9))
-    size = int(body.get("size", 16))
-    slot = int(body.get("slot", 1))
+    builder = functools.partial(
+        build_text_program_frames, msg, state.width, state.height,
+        color=fg, bg_color=bg, font_size=int(body.get("size", 16)),
+        scroll=body.get("scroll", "left"), speed=int(body.get("speed", 9)),
+    )
+    src = _detect_req_source(req)
+    return await _present_or_error(
+        builder,
+        label="Text",
+        now_playing=dict(kind="text", title=msg[:40], subtitle=f"Scrolling text · via {src}", source=src),
+    )
 
-    async with state.lock:
-        try:
-            wire_frames = build_text_program_frames(
-                msg,
-                state.width,
-                state.height,
-                color=fg,
-                bg_color=bg,
-                font_size=size,
-                scroll=scroll,
-                speed=speed,
-                program_id=slot,
-                start_sno=state.transport.next_sno(),
-            )
-            res = await state.transport.send_frames(wire_frames)
-            return web.json_response({"ok": True, "wire_frames": len(wire_frames), "last_ack": res[-1]})
-        except Exception as exc:
-            return web.json_response({"error": str(exc)}, status=500)
+
+_library_lock = asyncio.Lock()
+
+
+def _load_library() -> List[Dict[str, Any]]:
+    data = read_json(LIBRARY_FILE, list, validate=lambda d: isinstance(d, list))
+    return [x for x in data if isinstance(x, dict) and "id" in x]
 
 
 async def handle_library_get(_req: web.Request) -> web.Response:
-    if LIBRARY_FILE.exists():
-        data = json.loads(LIBRARY_FILE.read_text(encoding="utf-8"))
-    else:
-        data = []
-    return web.json_response({"items": data})
+    return web.json_response({"items": _load_library()})
 
 
 async def handle_library_save(req: web.Request) -> web.Response:
     body = await req.json()
-    items = json.loads(LIBRARY_FILE.read_text(encoding="utf-8")) if LIBRARY_FILE.exists() else []
+    width, height = _clamp_dims(body)
+    _decode_frames(body.get("frames"), width, height)  # validate before persisting
     item = {
-        "id": body.get("id") or f"art_{int(time.time() * 1000)}",
-        "name": body.get("name", "Untitled"),
-        "width": int(body["width"]),
-        "height": int(body["height"]),
+        "id": str(body.get("id") or f"art_{int(time.time() * 1000)}")[:64],
+        "name": str(body.get("name", "Untitled"))[:80],
+        "width": width,
+        "height": height,
         "favorite": bool(body.get("favorite", False)),
         "frames": body["frames"],
     }
-    items = [x for x in items if x["id"] != item["id"]]
-    items.insert(0, item)
-    LIBRARY_FILE.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    async with _library_lock:
+        items = [x for x in _load_library() if x["id"] != item["id"]]
+        items.insert(0, item)
+        atomic_write_json(LIBRARY_FILE, items)
     state.broadcast_soon("library_update", {"count": len(items)})
     return web.json_response({"ok": True, "item": item})
 
 
 async def handle_library_delete(req: web.Request) -> web.Response:
     item_id = req.match_info["id"]
-    items = json.loads(LIBRARY_FILE.read_text(encoding="utf-8")) if LIBRARY_FILE.exists() else []
-    items = [x for x in items if x["id"] != item_id]
-    LIBRARY_FILE.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    async with _library_lock:
+        items = [x for x in _load_library() if x["id"] != item_id]
+        atomic_write_json(LIBRARY_FILE, items)
+    state.broadcast_soon("library_update", {"count": len(items)})
     return web.json_response({"ok": True})
 
 
@@ -1305,14 +1573,10 @@ def _frames_rgb_to_gif_bytes(
 async def handle_export_gif(req: web.Request) -> web.Response:
     """Create a real animated GIF from editor frames, optionally uploading it to the display."""
     body = await req.json()
-    width = int(body.get("width", state.width))
-    height = int(body.get("height", state.height))
+    width, height = _clamp_dims(body)
     delay_ms = int(body.get("delay_ms", 200))
     send_to_display = bool(body.get("send", False))
-    slot = int(body.get("slot", 1))
-    frames_rgb = [base64.b64decode(b) for b in body["frames"]]
-    if not frames_rgb:
-        return web.json_response({"error": "No frames provided"}, status=400)
+    frames_rgb = _decode_frames(body.get("frames"), width, height)
 
     gif_bytes = _frames_rgb_to_gif_bytes(frames_rgb, width, height, delay_ms=delay_ms)
     resp_payload: Dict[str, Any] = {
@@ -1322,41 +1586,24 @@ async def handle_export_gif(req: web.Request) -> web.Response:
     }
 
     if send_to_display:
-        if not state.transport or not state.transport.is_connected:
-            return web.json_response({"error": "Not connected to display"}, status=400)
-        target_slot = state.next_back_slot(int(body["slot"]) if "slot" in body else None)
-        async with state.lock:
-            await _ensure_exit_modal_mode()
-            wire_frames = build_gif_program_frames(
-                gif_bytes,
-                width,
-                height,
-                program_id=target_slot,
-                start_sno=state.transport.next_sno(),
-                show_now=False,
-            )
-            res = await state.transport.send_frames(wire_frames)
-            await state.transport.send_frame(cmd_dispatch_program(target_slot, sno=state.transport.next_sno()))
-            await state.transport.send_frame(cmd_pgm_play(model=1, index=(target_slot - 1) & 0xFF, sno=state.transport.next_sno()))
-            if target_slot in (1, 2):
-                state.active_slot = target_slot
-            src = _detect_req_source(req)
-            state.set_now_playing(
-                "canvas", f"Custom Animation ({len(frames_rgb)}f)",
+        src = _detect_req_source(req)
+        return await _present_or_error(
+            functools.partial(build_gif_program_frames, gif_bytes, width, height),
+            resp_payload,
+            label=f"Animation ({len(frames_rgb)}f)",
+            now_playing=dict(
+                kind="canvas", title=f"Custom Animation ({len(frames_rgb)}f)",
                 subtitle=f"64×64 GIF · via {src}",
-                preview_url="data:image/gif;base64," + resp_payload["gif_b64"],
-                source=src,
-            )
-            resp_payload["wire_frames"] = len(wire_frames)
-            resp_payload["last_ack"] = res[-1]
+                preview_url="data:image/gif;base64," + resp_payload["gif_b64"], source=src,
+            ),
+        )
     return web.json_response(resp_payload)
 
 
 async def handle_custom_clock(req: web.Request) -> web.Response:
     """Render a custom pixel-art clock (digital, digital_date, analog, neon_bar) as frames/GIF."""
     body = await req.json()
-    width = int(body.get("width", state.width))
-    height = int(body.get("height", state.height))
+    width, height = _clamp_dims(body)
     design = body.get("design", "digital")
     fg = _parse_hex_rgb(body.get("fg", "#05d9e8"))
     accent = _parse_hex_rgb(body.get("accent", "#ff2a6d"))
@@ -1364,7 +1611,6 @@ async def handle_custom_clock(req: web.Request) -> web.Response:
     use_12h = bool(body.get("use_12h", False))
     blink = bool(body.get("blink", True))
     send = bool(body.get("send", False))
-    slot = int(body.get("slot", 1))
 
     frames_rgb = _render_custom_clock_frames(
         width, height, design=design, fg=fg, accent=accent, bg=bg, use_12h=use_12h, blink_colon=blink
@@ -1380,66 +1626,47 @@ async def handle_custom_clock(req: web.Request) -> web.Response:
     }
 
     if send:
-        if not state.transport or not state.transport.is_connected:
-            return web.json_response({"error": "Not connected to display"}, status=400)
-        async with state.lock:
-            if len(frames_rgb) > 1:
-                wire_frames = build_gif_program_frames(
-                    gif_bytes, width, height, program_id=slot, start_sno=state.transport.next_sno()
-                )
-            else:
-                ystp = encode_ystp01(frames_rgb, width, height)
-                wire_frames = build_image_program_frames(
-                    ystp, width, height, program_id=slot, start_sno=state.transport.next_sno()
-                )
-            res = await state.transport.send_frames(wire_frames)
-            out["wire_frames"] = len(wire_frames)
-            out["last_ack"] = res[-1]
+        if len(frames_rgb) > 1:
+            builder = functools.partial(build_gif_program_frames, gif_bytes, width, height)
+        else:
+            builder = functools.partial(build_image_program_frames, encode_ystp01(frames_rgb, width, height), width, height)
+        src = _detect_req_source(req)
+        return await _present_or_error(
+            builder, out, label=f"Pixel clock: {design}",
+            now_playing=dict(kind="clock", title=f"Pixel Clock ({design})", subtitle=f"Snapshot · via {src}",
+                             preview_url="data:image/gif;base64," + out["gif_b64"], source=src),
+        )
     return web.json_response(out)
 
 
 async def handle_gif_pack_list(_req: web.Request) -> web.Response:
-    items = []
-    if GIFS_DIR.exists():
-        for p in sorted(GIFS_DIR.glob("*.gif")):
-            items.append({"file": p.name, "url": f"/gifs/{p.name}", "size": p.stat().st_size})
+    items = [
+        {"file": p.name, "url": _gif_url(p), "size": p.stat().st_size, "user": p.parent == USER_GIFS_DIR}
+        for p in _all_gif_paths()
+    ]
     return web.json_response({"gifs": items})
 
 
 async def handle_gif_pack_send(req: web.Request) -> web.Response:
-    if not state.transport or not state.transport.is_connected:
-        return web.json_response({"error": "Not connected to display"}, status=400)
     body = await req.json()
     raw_name = body.get("file") or body.get("filename") or ""
     if not raw_name:
         return web.json_response({"error": "Missing file/filename"}, status=400)
-    filename = Path(str(raw_name)).name
-    gif_path = GIFS_DIR / filename
-    if not gif_path.is_file():
-        return web.json_response({"error": f"GIF not found: {filename}"}, status=404)
+    gif_path = _resolve_gif(raw_name)
+    if gif_path is None:
+        return web.json_response({"error": f"GIF not found: {Path(str(raw_name)).name}"}, status=404)
+    filename = gif_path.name
     raw = gif_path.read_bytes()
-    slot = state.next_back_slot(int(body["slot"]) if "slot" in body else None)
     src = _detect_req_source(req)
-    async with state.lock:
-        try:
-            await _ensure_exit_modal_mode()
-            wire_frames = build_gif_program_frames(
-                raw, state.width, state.height, program_id=slot, start_sno=state.transport.next_sno(), show_now=False
-            )
-            res = await state.transport.send_frames(wire_frames, label=f"GIF: {filename}")
-            await state.transport.send_frame(cmd_dispatch_program(slot, sno=state.transport.next_sno()))
-            await state.transport.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=state.transport.next_sno()))
-            if slot in (1, 2):
-                state.active_slot = slot
-            pretty = filename.rsplit(".", 1)[0].replace("_", " ").title()
-            pin = "pinOnAir" if "on_air" in filename else ("pinCoding" if "coding" in filename else "")
-            state.set_now_playing(
-                "gif", pretty, subtitle=f"64×64 Animated Mode · via {src}",
-                active_pin=pin, preview_url=f"/gifs/{filename}", source=src,
-            )
-            return web.json_response({"ok": True, "file": filename, "wire_frames": len(wire_frames), "last_ack": res[-1]})
-        except Exception as exc:
-            return web.json_response({"error": str(exc)}, status=500)
+    pretty = filename.rsplit(".", 1)[0].replace("_", " ").title()
+    pin = "pinOnAir" if "on_air" in filename else ("pinCoding" if "coding" in filename else "")
+    return await _present_or_error(
+        functools.partial(build_gif_program_frames, raw, state.width, state.height),
+        {"file": filename},
+        label=f"GIF: {filename}",
+        now_playing=dict(kind="gif", title=pretty, subtitle=f"64×64 Animated Mode · via {src}",
+                         active_pin=pin, preview_url=_gif_url(gif_path), source=src),
+    )
 
 
 def _render_hw_clock_shape_pil(
@@ -1736,64 +1963,49 @@ def _build_hw_clock_regions(
 
 async def handle_hw_text_clock(req: web.Request) -> web.Response:
     """Sync RTC and upload a standalone hardware-ticking `text_clock` shape/program."""
-    if not state.transport or not state.transport.is_connected:
-        return web.json_response({"error": "Not connected to display"}, status=400)
     body = await req.json()
-    shape = body.get("shape", "custom")
-    template = (body.get("template") or "{hh}:{mm}:{ss}").strip()
+    shape = str(body.get("shape", "custom"))
+    template = (body.get("template") or "{hh}:{mm}:{ss}").strip()[:64]
     fg = _parse_hex_rgb(body.get("color", "#05d9e8"))
     accent = _parse_hex_rgb(body.get("accent", "#ff2a6d"))
     bg = _parse_hex_rgb(body.get("bg", "#000000"))
     font_size = int(body.get("size", 16))
     scroll = body.get("scroll", "static")
-    slot = state.next_back_slot(int(body["slot"]) if "slot" in body else None)
-    bg_gif_name = body.get("bg_gif", "")
     bg_mode = str(body.get("bg_mode", "behind"))
     w, h = state.width, state.height
 
     bg_resource = None
-    if bg_gif_name:
-        gif_path = GIFS_DIR / Path(bg_gif_name).name
-        if gif_path.is_file():
-            bg_resource = gif_path.read_bytes()
+    bg_gif = _resolve_gif(body.get("bg_gif", "")) if body.get("bg_gif") else None
+    if bg_gif is not None:
+        bg_resource = bg_gif.read_bytes()
     if bg_resource is None:
         bg_resource = _render_hw_clock_shape_bg(w, h, shape, fg, accent, bg)
 
-    async with state.lock:
-        try:
-            await _ensure_exit_modal_mode()
-            if body.get("sync_first", True):
-                await state.transport.send_frame(cmd_sync_time(sno=state.transport.next_sno()))
-
-            regions = _build_hw_clock_regions(shape, w, h, fg, accent, bg)
-            if regions is None:
-                wire_frames = build_text_clock_program_frames(
-                    template, w, h, color=fg, bg_color=bg, font_size=font_size, scroll=scroll,
-                    program_id=slot, start_sno=state.transport.next_sno(), show_now=False,
-                    background_resource=bg_resource, bg_mode=bg_mode,
-                )
-            else:
-                wire_frames = build_multi_region_hw_clock_frames(
-                    regions, w, h, program_id=slot, start_sno=state.transport.next_sno(), show_now=False,
-                    background_resource=bg_resource, bg_mode=bg_mode,
-                )
-            res = await state.transport.send_frames(wire_frames, label=f"Clock: {shape}")
-            await state.transport.send_frame(cmd_dispatch_program(slot, sno=state.transport.next_sno()))
-            await state.transport.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=state.transport.next_sno()))
-            if slot in (1, 2):
-                state.active_slot = slot
-            src = _detect_req_source(req)
-            col_q = urllib.parse.quote(body.get("color", "#05d9e8"))
-            acc_q = urllib.parse.quote(body.get("accent", "#ff2a6d"))
-            state.set_now_playing(
-                "clock", shape.replace("hw_", "").replace("_", " ").title() + " Clock",
-                subtitle=f"Hardware RTC · via {src}",
-                preview_url=f"/api/hw_clock_preview/{shape}?color={col_q}&accent={acc_q}",
-                source=src,
-            )
-            return web.json_response({"ok": True, "shape": shape, "wire_frames": len(wire_frames), "last_ack": res[-1]})
-        except Exception as exc:
-            return web.json_response({"error": str(exc)}, status=500)
+    regions = _build_hw_clock_regions(shape, w, h, fg, accent, bg)
+    if regions is None:
+        builder = functools.partial(
+            build_text_clock_program_frames, template, w, h, color=fg, bg_color=bg, font_size=font_size,
+            scroll=scroll, background_resource=bg_resource, bg_mode=bg_mode,
+        )
+    else:
+        builder = functools.partial(
+            build_multi_region_hw_clock_frames, regions, w, h, background_resource=bg_resource, bg_mode=bg_mode,
+        )
+    src = _detect_req_source(req)
+    col_q = urllib.parse.quote(str(body.get("color", "#05d9e8")))
+    acc_q = urllib.parse.quote(str(body.get("accent", "#ff2a6d")))
+    return await _present_or_error(
+        builder,
+        {"shape": shape},
+        label=f"Clock: {shape}",
+        sync_time=bool(body.get("sync_first", True)),
+        now_playing=dict(
+            kind="clock", title=shape.replace("hw_", "").replace("_", " ").title() + " Clock",
+            subtitle=f"Hardware RTC · via {src}",
+            preview_url=f"/api/hw_clock_preview/{urllib.parse.quote(shape)}?color={col_q}&accent={acc_q}",
+            source=src,
+        ),
+    )
 
 
 async def handle_qrcode(req: web.Request) -> web.Response:
@@ -1806,9 +2018,9 @@ async def handle_qrcode(req: web.Request) -> web.Response:
         return web.json_response({"error": "QR content cannot be empty"}, status=400)
     fg = _parse_hex_rgb(body.get("fg", "#000000"))
     bg = _parse_hex_rgb(body.get("bg", "#ffffff"))
-    width = int(body.get("width", state.width))
-    height = int(body.get("height", state.height))
-    slot = int(body.get("slot", 1))
+    if len(text) > 1000:
+        return web.json_response({"error": "QR content is too long (max 1000 characters)"}, status=400)
+    width, height = _clamp_dims(body)
     send = bool(body.get("send", False))
 
     qr = qrcode.QRCode(
@@ -1833,16 +2045,13 @@ async def handle_qrcode(req: web.Request) -> web.Response:
         "frame_b64": base64.b64encode(raw_rgb).decode("ascii"),
     }
     if send:
-        if not state.transport or not state.transport.is_connected:
-            return web.json_response({"error": "Not connected to display"}, status=400)
         ystp = encode_ystp01([raw_rgb], width, height)
-        async with state.lock:
-            wire_frames = build_image_program_frames(
-                ystp, width, height, program_id=slot, start_sno=state.transport.next_sno()
-            )
-            res = await state.transport.send_frames(wire_frames)
-            out["wire_frames"] = len(wire_frames)
-            out["last_ack"] = res[-1]
+        src = _detect_req_source(req)
+        return await _present_or_error(
+            functools.partial(build_image_program_frames, ystp, width, height),
+            out, label="QR code",
+            now_playing=dict(kind="canvas", title="QR Code", subtitle=f"{text[:30]} · via {src}", source=src),
+        )
     return web.json_response(out)
 
 
@@ -1984,35 +2193,68 @@ async def handle_gif_search(req: web.Request) -> web.Response:
         return web.json_response({"error": f"GIF API request failed: {exc}"}, status=502)
 
 
+MAX_REMOTE_GIF_BYTES = 12 * 1024 * 1024
+
+
+def _assert_public_host(host: str) -> None:
+    """Block SSRF: refuse hosts that resolve to loopback/private/link-local/reserved addresses."""
+    if not host:
+        raise ValueError("URL has no host")
+    infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    for info in infos:
+        addr = ipaddress.ip_address(info[4][0])
+        if (addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
+                or addr.is_multicast or addr.is_unspecified):
+            raise ValueError(f"Refusing to fetch from a local/private address ({host})")
+
+
+async def _fetch_public_https(url: str, max_bytes: int = MAX_REMOTE_GIF_BYTES) -> bytes:
+    """Download a public HTTPS resource with SSRF checks on every redirect hop and a size cap."""
+    async with ClientSession(timeout=ClientTimeout(total=20)) as session:
+        for _hop in range(4):
+            parts = urllib.parse.urlsplit(url)
+            if parts.scheme != "https":
+                raise ValueError("Only https:// GIF URLs are allowed")
+            await asyncio.to_thread(_assert_public_host, parts.hostname or "")
+            async with session.get(url, allow_redirects=False) as resp:
+                if resp.status in (301, 302, 303, 307, 308) and resp.headers.get("Location"):
+                    url = urllib.parse.urljoin(url, resp.headers["Location"])
+                    continue
+                if resp.status != 200:
+                    raise ValueError(f"Failed to fetch GIF (HTTP {resp.status})")
+                buf = bytearray()
+                async for chunk in resp.content.iter_chunked(65536):
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        raise ValueError(f"GIF is larger than {max_bytes // (1024 * 1024)} MB")
+                return bytes(buf)
+        raise ValueError("Too many redirects")
+
+
 async def handle_gif_fetch_send(req: web.Request) -> web.Response:
     """Download a selected GIF URL, resize to display resolution, optionally save locally, and send."""
     body = await req.json()
-    url = (body.get("url") or "").strip()
-    if not (url.startswith("https://") or url.startswith("http://")):
-        return web.json_response({"error": "Invalid GIF URL"}, status=400)
-    save_name = (body.get("save_name") or "").strip()
+    url = str(body.get("url") or "").strip()
+    if not url.startswith("https://"):
+        return web.json_response({"error": "Only https:// GIF URLs are allowed"}, status=400)
+    save_name = str(body.get("save_name") or "").strip()
     send = bool(body.get("send", True))
-    slot = int(body.get("slot", 1))
-    width = int(body.get("width", state.width))
-    height = int(body.get("height", state.height))
+    width, height = _clamp_dims(body)
 
     try:
-        async with ClientSession(timeout=ClientTimeout(total=15)) as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    return web.json_response({"error": f"Failed to fetch GIF (HTTP {resp.status})"}, status=502)
-                raw = await resp.read()
-        resized_gif = _resize_gif_bytes(raw, width, height)
+        raw = await _fetch_public_https(url)
+        resized_gif = await asyncio.to_thread(_resize_gif_bytes, raw, width, height)
     except Exception as exc:
-        return web.json_response({"error": f"Failed to download/resize GIF: {exc}"}, status=500)
+        return web.json_response({"error": f"Failed to download/resize GIF: {exc}"}, status=400)
 
     saved_file = None
     if save_name:
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in save_name)[:40] or f"web_{int(time.time())}"
         if not safe.endswith(".gif"):
             safe += ".gif"
-        GIFS_DIR.mkdir(parents=True, exist_ok=True)
-        (GIFS_DIR / safe).write_bytes(resized_gif)
+        # Saved into the user's data folder: the app bundle is read-only / code-signed
+        USER_GIFS_DIR.mkdir(parents=True, exist_ok=True)
+        atomic_write_text_bytes(USER_GIFS_DIR / safe, resized_gif)
         saved_file = safe
 
     out: Dict[str, Any] = {
@@ -2022,33 +2264,38 @@ async def handle_gif_fetch_send(req: web.Request) -> web.Response:
         "gif_b64": base64.b64encode(resized_gif).decode("ascii"),
     }
     if send:
-        if not state.transport or not state.transport.is_connected:
-            return web.json_response({"error": "Not connected to display"}, status=400)
-        async with state.lock:
-            wire_frames = build_gif_program_frames(
-                resized_gif, width, height, program_id=slot, start_sno=state.transport.next_sno()
-            )
-            res = await state.transport.send_frames(wire_frames)
-            out["wire_frames"] = len(wire_frames)
-            out["last_ack"] = res[-1]
+        src = _detect_req_source(req)
+        return await _present_or_error(
+            functools.partial(build_gif_program_frames, resized_gif, width, height),
+            out, label="Web GIF",
+            now_playing=dict(kind="gif", title=saved_file or "Web GIF", subtitle=f"Online GIF · via {src}",
+                             preview_url="data:image/gif;base64," + out["gif_b64"], source=src),
+        )
     return web.json_response(out)
+
+
+def atomic_write_text_bytes(path: Path, data: bytes) -> None:
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
 
 
 async def handle_upload_sequence(req: web.Request) -> web.Response:
     """
-    Convert an ordered sequence of multiple images (PNG/JPG/BMP/WEBP) into:
-      - mode='gif': a single looping animated GIF89a (returned as frames + gif_b64, optionally sent)
-      - mode='playlist': separate hardware program slots (slot, slot+1, ...) looped via pgm_play
+    Convert an ordered sequence of images (PNG/JPG/BMP/WEBP) into one looping animated GIF.
+    `mode="playlist"` is accepted for compatibility and produces the same single program with
+    the per-image delay: writing one hardware program per image would collide with the
+    reserved slot map (live 1-2, alert 3, schedule 4-8).
     """
     body = await req.json()
     images_b64: List[str] = body.get("images") or []
     if not images_b64:
         return web.json_response({"error": "Select at least one image"}, status=400)
-    width = int(body.get("width", state.width))
-    height = int(body.get("height", state.height))
-    delay_ms = int(body.get("delay_ms", 400))
-    mode = body.get("mode", "gif")  # "gif" | "playlist"
-    start_slot = int(body.get("slot", 1))
+    if len(images_b64) > MAX_FRAMES:
+        return web.json_response({"error": f"Too many images (max {MAX_FRAMES})"}, status=400)
+    width, height = _clamp_dims(body)
+    delay_ms = max(40, min(60000, int(body.get("delay_ms", 400))))
+    mode = body.get("mode", "gif")
     send = bool(body.get("send", True))
 
     frames_rgb: List[bytes] = []
@@ -2067,37 +2314,14 @@ async def handle_upload_sequence(req: web.Request) -> web.Response:
         "gif_b64": base64.b64encode(gif_bytes).decode("ascii"),
         "frames": [base64.b64encode(f).decode("ascii") for f in frames_rgb],
     }
-
     if send:
-        if not state.transport or not state.transport.is_connected:
-            return web.json_response({"error": "Not connected to display"}, status=400)
-        async with state.lock:
-            total_wire = 0
-            if mode == "playlist":
-                slots: List[int] = []
-                for idx, fr in enumerate(frames_rgb):
-                    slot_id = start_slot + idx
-                    slots.append(slot_id)
-                    ystp = encode_ystp01([fr], width, height)
-                    wfs = build_image_program_frames(
-                        ystp, width, height, program_id=slot_id, start_sno=state.transport.next_sno(), show_now=False
-                    )
-                    await state.transport.send_frames(wfs)
-                    total_wire += len(wfs)
-                res = await state.transport.send_frame(
-                    cmd_pgm_play(model=2, index=0, ids_pro=slots, sno=state.transport.next_sno())
-                )
-                total_wire += 1
-                out["slots"] = slots
-                out["wire_frames"] = total_wire
-                out["last_ack"] = res
-            else:
-                wfs = build_gif_program_frames(
-                    gif_bytes, width, height, program_id=start_slot, start_sno=state.transport.next_sno()
-                )
-                res = await state.transport.send_frames(wfs)
-                out["wire_frames"] = len(wfs)
-                out["last_ack"] = res[-1]
+        src = _detect_req_source(req)
+        return await _present_or_error(
+            functools.partial(build_gif_program_frames, gif_bytes, width, height),
+            out, label=f"Sequence ({len(frames_rgb)} images)",
+            now_playing=dict(kind="canvas", title=f"Image Sequence ({len(frames_rgb)})", subtitle=f"via {src}",
+                             preview_url="data:image/gif;base64," + out["gif_b64"], source=src),
+        )
     return web.json_response(out)
 
 
@@ -2128,34 +2352,26 @@ async def handle_ble_profile(req: web.Request) -> web.Response:
                     "estimated_bps": p.estimated_bps,
                     "hardware_verified": p.hardware_verified,
                     "description": p.description,
+                    # swnd > 1 wedges the panel's BLE RX buffer: never selectable on real hardware
+                    "blocked_on_hardware": k in EXPERIMENTAL_PROFILES,
                 }
-                for k, p in BLE_PROFILES.items()
+                for k, p in ALL_PROFILES.items()
             },
         })
     body = await req.json()
-    name = body.get("profile", "conservative")
-    if name not in BLE_PROFILES:
+    name = str(body.get("profile", "conservative"))
+    if name not in ALL_PROFILES:
         return web.json_response({"error": f"Unknown profile: {name}"}, status=400)
-    prof = BLE_PROFILES[name]
-    ver = str(state.device_info.get("version", ""))
-    if (
-        state.mode == "ble"
-        and prof.swnd_max > 1
-        and "EXYC-A" in ver
-        and not body.get("force", False)
-    ):
+    if state.transport:
+        try:
+            state.transport.set_profile(name)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+    elif name in EXPERIMENTAL_PROFILES:
         return web.json_response(
-            {
-                "error": (
-                    f"Profile '{name}' (SWND {prof.swnd_max}) is blocked on EXYC-A firmware "
-                    "because sliding-window pipelining stalls FFF1 RX ACKs. "
-                    "Use 'ys_l_fast', 'conservative', or 'safe_ack'."
-                )
-            },
+            {"error": f"Profile '{name}' uses a sliding window > 1 and is blocked on real hardware."},
             status=400,
         )
-    if state.transport:
-        state.transport.set_profile(name)
     return web.json_response({"ok": True, "current": name})
 
 
@@ -2171,7 +2387,7 @@ async def handle_benchmark(req: web.Request) -> web.Response:
                 fake_gif,
                 state.width,
                 state.height,
-                program_id=9,
+                program_id=BENCHMARK_SLOT,
                 start_sno=state.transport.next_sno(),
                 show_now=False,
                 data_save=1,
@@ -2179,6 +2395,10 @@ async def handle_benchmark(req: web.Request) -> web.Response:
             t0 = time.monotonic()
             await state.transport.send_frames(frames, label="Throughput Benchmark")
             elapsed = max(0.001, time.monotonic() - t0)
+            try:  # free the RAM scratch program
+                await state.transport.send_frame(cmd_delete_programs([BENCHMARK_SLOT], sno=state.transport.next_sno()))
+            except Exception as exc:
+                log.warning("Deleting benchmark slot failed: %s", exc)
             total_wire = sum(len(f) for f in frames)
             return web.json_response({
                 "ok": True,
@@ -2219,15 +2439,13 @@ async def handle_procedural(req: web.Request) -> web.Response:
         return web.json_response({"effects": PROCEDURAL_EFFECTS})
     body = await req.json()
     effect = body.get("effect", "plasma")
-    width = int(body.get("width", state.width))
-    height = int(body.get("height", state.height))
+    width, height = _clamp_dims(body)
     c1 = _parse_hex_rgb(body.get("color1", "#05d9e8"))
     c2 = _parse_hex_rgb(body.get("color2", "#ff2a6d"))
     density = float(body.get("density", 0.6))
-    n_frames = int(body.get("frames", 16))
+    n_frames = max(1, min(MAX_FRAMES, int(body.get("frames", 16))))
     delay_ms = int(body.get("delay_ms", 90))
     send = bool(body.get("send", False))
-    slot = int(body.get("slot", 1))
 
     pil_frames = generate_procedural(effect, width, height, color1=c1, color2=c2, density=density, n_frames=n_frames)
     gif_bytes = frames_to_gif_bytes(pil_frames, delay_ms=delay_ms)
@@ -2241,23 +2459,21 @@ async def handle_procedural(req: web.Request) -> web.Response:
         "frames": [base64.b64encode(f.tobytes()).decode("ascii") for f in pil_frames],
     }
     if send:
-        if not state.transport or not state.transport.is_connected:
-            return web.json_response({"error": "Not connected to display"}, status=400)
-        async with state.lock:
-            wire_frames = build_gif_program_frames(
-                gif_bytes, width, height, program_id=slot, start_sno=state.transport.next_sno()
-            )
-            res = await state.transport.send_frames(wire_frames, label=f"Procedural: {effect}")
-            out["wire_frames"] = len(wire_frames)
-            out["last_ack"] = res[-1]
+        src = _detect_req_source(req)
+        return await _present_or_error(
+            functools.partial(build_gif_program_frames, gif_bytes, width, height),
+            out, label=f"Procedural: {effect}",
+            now_playing=dict(kind="gif", title=f"{str(effect).replace('_', ' ').title()} Effect",
+                             subtitle=f"Procedural · via {src}",
+                             preview_url="data:image/gif;base64," + out["gif_b64"], source=src),
+        )
     return web.json_response(out)
 
 
 async def handle_avatar(req: web.Request) -> web.Response:
     body = await req.json()
     seed = int(body.get("seed", int(time.time()) % 9999))
-    width = int(body.get("width", state.width))
-    height = int(body.get("height", state.height))
+    width, height = _clamp_dims(body)
     img = generate_avatar(
         seed,
         width=width,
@@ -2269,22 +2485,19 @@ async def handle_avatar(req: web.Request) -> web.Response:
     raw = img.tobytes()
     out: Dict[str, Any] = {"ok": True, "seed": seed, "frame_b64": base64.b64encode(raw).decode("ascii")}
     if body.get("send"):
-        if not state.transport or not state.transport.is_connected:
-            return web.json_response({"error": "Not connected to display"}, status=400)
-        ystp = encode_ystp01([raw], width, height)
-        async with state.lock:
-            wfs = build_image_program_frames(ystp, width, height, program_id=int(body.get("slot", 1)), start_sno=state.transport.next_sno())
-            res = await state.transport.send_frames(wfs, label="Pixel Avatar")
-            out["wire_frames"] = len(wfs)
-            out["last_ack"] = res[-1]
+        src = _detect_req_source(req)
+        return await _present_or_error(
+            functools.partial(build_image_program_frames, encode_ystp01([raw], width, height), width, height),
+            out, label="Pixel Avatar",
+            now_playing=dict(kind="canvas", title=f"Pixel Avatar #{seed}", subtitle=f"via {src}", source=src),
+        )
     return web.json_response(out)
 
 
 async def handle_process_image(req: web.Request) -> web.Response:
     body = await req.json()
     raw = base64.b64decode(body["data_b64"])
-    width = int(body.get("width", state.width))
-    height = int(body.get("height", state.height))
+    width, height = _clamp_dims(body)
     img = process_image_studio(
         raw,
         width,
@@ -2307,22 +2520,20 @@ async def handle_process_image(req: web.Request) -> web.Response:
         "frame_b64": base64.b64encode(rgb).decode("ascii"),
     }
     if body.get("send"):
-        if not state.transport or not state.transport.is_connected:
-            return web.json_response({"error": "Not connected to display"}, status=400)
-        async with state.lock:
-            wfs = build_image_program_frames(ystp, width, height, program_id=int(body.get("slot", 1)), start_sno=state.transport.next_sno())
-            res = await state.transport.send_frames(wfs, label="Image Studio")
-            out["wire_frames"] = len(wfs)
-            out["last_ack"] = res[-1]
+        src = _detect_req_source(req)
+        return await _present_or_error(
+            functools.partial(build_image_program_frames, ystp, width, height),
+            out, label="Image Studio",
+            now_playing=dict(kind="canvas", title="Photo", subtitle=f"Image Studio · via {src}", source=src),
+        )
     return web.json_response(out)
 
 
 async def handle_upload_video(req: web.Request) -> web.Response:
     body = await req.json()
     raw = base64.b64decode(body["data_b64"])
-    filename = body.get("filename", "clip.mp4")
-    width = int(body.get("width", state.width))
-    height = int(body.get("height", state.height))
+    filename = Path(str(body.get("filename", "clip.mp4"))).name
+    width, height = _clamp_dims(body)
     try:
         gif_bytes = convert_video_to_gif(
             raw,
@@ -2330,8 +2541,8 @@ async def handle_upload_video(req: web.Request) -> web.Response:
             width,
             height,
             start_s=float(body.get("start_s", 0.0)),
-            duration_s=float(body.get("duration_s", 3.0)),
-            fps=int(body.get("fps", 10)),
+            duration_s=max(0.2, min(15.0, float(body.get("duration_s", 3.0)))),
+            fps=max(1, min(25, int(body.get("fps", 10)))),
         )
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -2344,13 +2555,13 @@ async def handle_upload_video(req: web.Request) -> web.Response:
         "gif_b64": base64.b64encode(gif_bytes).decode("ascii"),
     }
     if body.get("send"):
-        if not state.transport or not state.transport.is_connected:
-            return web.json_response({"error": "Not connected to display"}, status=400)
-        async with state.lock:
-            wfs = build_gif_program_frames(gif_bytes, width, height, program_id=int(body.get("slot", 1)), start_sno=state.transport.next_sno())
-            res = await state.transport.send_frames(wfs, label="Video GIF")
-            out["wire_frames"] = len(wfs)
-            out["last_ack"] = res[-1]
+        src = _detect_req_source(req)
+        return await _present_or_error(
+            functools.partial(build_gif_program_frames, gif_bytes, width, height),
+            out, label="Video GIF",
+            now_playing=dict(kind="gif", title="Video Clip", subtitle=f"{filename} · via {src}",
+                             preview_url="data:image/gif;base64," + out["gif_b64"], source=src),
+        )
     return web.json_response(out)
 
 
@@ -2372,8 +2583,7 @@ async def handle_widget_frame(req: web.Request) -> web.Response:
     """Render a connection-dependent local live widget card (Pomodoro, System, Now Playing, Focus, Info)."""
     body = await req.json()
     kind = body.get("kind", "focus")
-    width = int(body.get("width", state.width))
-    height = int(body.get("height", state.height))
+    width, height = _clamp_dims(body)
     fg = _parse_hex_rgb(body.get("fg", "#38bdf8"))
     accent = _parse_hex_rgb(body.get("accent", "#f43f5e"))
     bg = _parse_hex_rgb(body.get("bg", "#090b10"))
@@ -2416,14 +2626,16 @@ async def handle_widget_frame(req: web.Request) -> web.Response:
     raw = img.tobytes()
     out: Dict[str, Any] = {"ok": True, "kind": kind, "frame_b64": base64.b64encode(raw).decode("ascii")}
     if body.get("send"):
-        if not state.transport or not state.transport.is_connected:
-            return web.json_response({"error": "Not connected to display"}, status=400)
-        ystp = encode_ystp01([raw], width, height)
-        async with state.lock:
-            wfs = build_image_program_frames(ystp, width, height, program_id=int(body.get("slot", 1)), start_sno=state.transport.next_sno())
-            res = await state.transport.send_frames(wfs, label=f"Widget: {kind}")
-            out["wire_frames"] = len(wfs)
-            out["last_ack"] = res[-1]
+        src = _detect_req_source(req)
+        pbuf = io.BytesIO()
+        img.save(pbuf, format="PNG")
+        return await _present_or_error(
+            functools.partial(build_image_program_frames, encode_ystp01([raw], width, height), width, height),
+            out, label=f"Widget: {kind}",
+            now_playing=dict(kind="canvas", title=f"{str(kind).replace('_', ' ').title()} Widget", subtitle=f"via {src}",
+                             preview_url="data:image/png;base64," + base64.b64encode(pbuf.getvalue()).decode("ascii"),
+                             source=src),
+        )
     return web.json_response(out)
 
 
@@ -2455,49 +2667,131 @@ async def _auto_reconnect_loop() -> None:
                         state.width = data["param_dev"].width
                         state.height = data["param_dev"].height
                 t.set_profile(recommend_profile(state.device_name or "", state.device_info.get("version", "")))
+                await _resync_after_connect()
+                log.info("Auto-reconnected to %s", state.device_name)
                 state.broadcast_soon("status_update", state.status_dict())
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("Auto-reconnect to %s failed: %s", state.last_ble_address, exc)
+                try:
+                    await t.disconnect()
+                except Exception:
+                    log.exception("Cleanup disconnect after failed auto-reconnect failed")
+                if state.transport is t:
+                    state.transport = None
 
 
 async def _work_scheduler_loop() -> None:
-    """Periodically evaluate time & day work-mode schedule and auto-switch the display."""
+    """Periodically evaluate the time & day work-mode schedule and auto-switch the display."""
+    failed_rule_id: Optional[str] = None
     while True:
         await asyncio.sleep(20.0)
         try:
             sched = _load_work_schedule()
-            if not sched.get("enabled", True):
-                continue
+            if not sched.get("enabled", True) or sched.get("device_mode"):
+                continue  # disabled, or the on-device Flash schedule is in charge
             if not state.transport or not state.transport.is_connected:
                 continue
-            if getattr(state, "_context_override", None):
-                continue
-            now = datetime.datetime.now()
-            matched = _match_schedule_rule(sched.get("rules", []), now)
+            if state.context_override or _load_smart_config().get("auto_cycle_enabled"):
+                continue  # an explicit mode the user turned on takes precedence
+            matched = _match_schedule_rule(sched.get("rules", []), datetime.datetime.now())
             if not matched:
                 continue
             rule_id = matched.get("id")
-            if rule_id and rule_id != getattr(state, "last_applied_rule_id", None):
-                await _apply_schedule_rule(matched)
+            if rule_id and rule_id != state.last_applied_rule_id:
+                try:
+                    await _apply_schedule_rule(matched, source="Schedule", persist=AUTO_REFRESH_PERSIST)
+                    failed_rule_id = None
+                except DisplayNotConnected:
+                    pass
+                except Exception:
+                    if failed_rule_id != rule_id:  # log once per rule, retry silently every tick
+                        log.exception("Applying schedule rule '%s' failed; will retry", matched.get("name"))
+                        failed_rule_id = rule_id
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            pass
+            log.exception("Work scheduler tick failed")
+
+
+_HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+RULE_KINDS = ("gif", "hw_clock", "power_off")
+MAX_RULES = 50
+
+
+def _normalize_rule(rule: Any, idx: int, *, strict: bool) -> Dict[str, Any]:
+    """Validate one schedule rule. strict=True also checks the target exists (on save)."""
+    if not isinstance(rule, dict):
+        raise ValueError(f"Rule {idx + 1} is not an object")
+    name = str(rule.get("name") or f"Rule {idx + 1}").strip()[:60]
+    kind = str(rule.get("kind", "gif"))
+    if kind not in RULE_KINDS:
+        raise ValueError(f"Rule '{name}': kind must be one of {', '.join(RULE_KINDS)}")
+    start, end = str(rule.get("start", "")).strip(), str(rule.get("end", "")).strip()
+    if not _HHMM_RE.match(start) or not _HHMM_RE.match(end):
+        raise ValueError(f"Rule '{name}': start/end must be HH:MM")
+    days = [d for d in (str(x).lower() for x in (rule.get("days") or [])) if d in DAY_KEYS]
+    if not days:
+        raise ValueError(f"Rule '{name}': pick at least one day")
+    target = str(rule.get("target", "")).strip()[:120]
+    if strict and kind == "gif" and _resolve_gif(target) is None:
+        raise ValueError(f"Rule '{name}': GIF not found: {target}")
+    bri = rule.get("brightness")
+    out: Dict[str, Any] = {
+        "id": str(rule.get("id") or f"r_{secrets.token_hex(4)}")[:40],
+        "enabled": bool(rule.get("enabled", True)),
+        "name": name,
+        "days": [d for d in DAY_KEYS if d in days],
+        "start": start,
+        "end": end,
+        "kind": kind,
+        "target": target,
+        "brightness": None if bri in (None, "") else max(1, min(15, int(bri))),
+    }
+    for key in ("color", "accent"):
+        val = rule.get(key)
+        if isinstance(val, str) and re.fullmatch(r"#?[0-9a-fA-F]{6}", val.strip()):
+            out[key] = "#" + val.strip().lstrip("#")
+    return out
+
+
+_schedule_cache: Dict[str, Any] = {"mtime": None, "data": None}
 
 
 def _load_work_schedule() -> Dict[str, Any]:
-    if SCHEDULE_FILE.exists():
+    """Load + validate the schedule (cached by file mtime; status_dict calls this on every broadcast)."""
+    try:
+        mtime = SCHEDULE_FILE.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    if mtime is not None and _schedule_cache["mtime"] == mtime and _schedule_cache["data"] is not None:
+        return json.loads(json.dumps(_schedule_cache["data"]))
+    data = _load_work_schedule_uncached()
+    try:
+        _schedule_cache.update(mtime=SCHEDULE_FILE.stat().st_mtime_ns, data=json.loads(json.dumps(data)))
+    except OSError:
+        pass
+    return data
+
+
+def _load_work_schedule_uncached() -> Dict[str, Any]:
+    def _default() -> Dict[str, Any]:
+        data = json.loads(json.dumps(DEFAULT_WORK_SCHEDULE))
+        _save_work_schedule(data)
+        return data
+
+    data = read_json(SCHEDULE_FILE, _default, validate=lambda d: isinstance(d, dict) and isinstance(d.get("rules"), list))
+    rules: List[Dict[str, Any]] = []
+    for idx, raw in enumerate(data.get("rules", [])[:MAX_RULES]):
         try:
-            data = json.loads(SCHEDULE_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and isinstance(data.get("rules"), list):
-                return data
-        except Exception:
-            pass
-    data = json.loads(json.dumps(DEFAULT_WORK_SCHEDULE))
-    _save_work_schedule(data)
+            rules.append(_normalize_rule(raw, idx, strict=False))
+        except (ValueError, TypeError) as exc:
+            log.warning("Ignoring invalid schedule rule: %s", exc)
+    data["rules"] = rules
     return data
 
 
 def _save_work_schedule(data: Dict[str, Any]) -> None:
-    SCHEDULE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    atomic_write_json(SCHEDULE_FILE, data)
 
 
 def _hhmm_to_min(hhmm: str) -> int:
@@ -2514,7 +2808,7 @@ def _match_schedule_rule(rules: List[Dict[str, Any]], now: Optional[datetime.dat
     prev_day_key = DAY_KEYS[(now.weekday() - 1) % 7]
     cur_min = now.hour * 60 + now.minute
     for rule in rules:
-        if not rule.get("enabled", True):
+        if not isinstance(rule, dict) or not rule.get("enabled", True):
             continue
         days = [str(d).lower() for d in rule.get("days", [])]
         s_min = _hhmm_to_min(rule.get("start", "00:00"))
@@ -2523,10 +2817,16 @@ def _match_schedule_rule(rules: List[Dict[str, Any]], now: Optional[datetime.dat
             if day_key in days and s_min <= cur_min < e_min:
                 return rule
         else:
-            # Overnight window (e.g., 22:30 -> 08:00)
+            # Overnight window (e.g., 22:30 -> 08:00): the part after midnight belongs to the previous day's rule
             if (day_key in days and cur_min >= s_min) or (prev_day_key in days and cur_min < e_min):
                 return rule
     return None
+
+
+def _rule_brief(rule: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not rule:
+        return None
+    return {"name": rule.get("name", "Rule"), "start": rule.get("start", ""), "end": rule.get("end", "")}
 
 
 def _build_schedule_summary(now: Optional[datetime.datetime] = None) -> Dict[str, Any]:
@@ -2540,10 +2840,7 @@ def _build_schedule_summary(now: Optional[datetime.datetime] = None) -> Dict[str
     next_rule = None
     best_delta = 10**9
     for r in rules:
-        if not r.get("enabled", True):
-            continue
-        days = [str(d).lower() for d in r.get("days", [])]
-        if day_key not in days:
+        if not r.get("enabled", True) or day_key not in r.get("days", []):
             continue
         s_min = _hhmm_to_min(r.get("start", "00:00"))
         if s_min > cur_min and (s_min - cur_min) < best_delta:
@@ -2551,99 +2848,200 @@ def _build_schedule_summary(now: Optional[datetime.datetime] = None) -> Dict[str
             next_rule = r
     return {
         "enabled": bool(sched.get("enabled", True)),
-        "active": {"name": active["name"], "start": active["start"], "end": active["end"]} if active else None,
-        "next": {"name": next_rule["name"], "start": next_rule["start"], "end": next_rule["end"]} if next_rule else None,
+        "active": _rule_brief(active),
+        "next": _rule_brief(next_rule),
         "flashed_at": sched.get("flashed_at"),
         "flashed_count": sched.get("flashed_count", 0),
+        "device_mode": bool(sched.get("device_mode", False)),
+        "device_schedule_active": state.device_schedule_active,
     }
+
+
+def _clock_regions_or_default(shape: str, w: int, h: int, fg: tuple, accent: tuple, bg: tuple) -> List[Dict[str, Any]]:
+    return _build_hw_clock_regions(shape or "hw_neon_ring", w, h, fg, accent, bg) or [
+        {"template": "{hh}:{mm}", "x": 6, "y": 16, "w": w - 12, "h": 21, "color": fg, "bg_color": bg, "font_size": 16},
+        {"template": "{MM}/{DD}", "x": 10, "y": 37, "w": w - 20, "h": 16, "color": accent, "bg_color": bg, "font_size": 12},
+    ]
+
+
+def _shift_days(days: List[str], offset: int) -> List[str]:
+    idx = {d: i for i, d in enumerate(DAY_KEYS)}
+    return [DAY_KEYS[(idx[d] + offset) % 7] for d in days if d in idx]
+
+
+def _rule_device_programs(rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Turn one schedule rule into 1-2 on-device programs (PERIOD_PRO has a single weekday mask
+    per program). An overnight rule on specific days needs a second program for the part
+    after midnight, which belongs to the FOLLOWING days.
+    """
+    days = rule.get("days") or list(DAY_KEYS)
+    s_t, e_t = str(rule.get("start", "08:00")), str(rule.get("end", "18:00"))
+    if _hhmm_to_min(s_t) <= _hhmm_to_min(e_t):
+        return [{"days": days, "windows": [f"{s_t}-{e_t}"]}]
+    if set(days) == set(DAY_KEYS):
+        return [{"days": days, "windows": [f"{s_t}-23:59", f"00:00-{e_t}"]}]
+    return [
+        {"days": days, "windows": [f"{s_t}-23:59"]},
+        {"days": _shift_days(days, 1), "windows": [f"00:00-{e_t}"]},
+    ]
 
 
 async def handle_work_schedule_flash_device(req: web.Request) -> web.Response:
     """
-    POST /api/work_schedule/flash_device — Store enabled schedule rules directly in the LED
-    display's on-board flash memory (Slots 1..N) with TLV 0x16 (PERIOD_PRO) date/weekday/time
-    windows so the display switches autonomously on its internal RTC even with Mac offline!
+    POST /api/work_schedule/flash_device — store enabled schedule rules in the display's
+    on-board Flash (Slots 4..8) with TLV 0x16 (PERIOD_PRO) windows, so the panel switches
+    on its own RTC even with the Mac offline. Live content (Slots 1-2) and alerts (Slot 3)
+    never overlap these slots.
     """
-    if not state.transport or not state.transport.is_connected:
-        return web.json_response({"error": "Not connected to display"}, status=400)
-    body = await req.json() if req.can_read_body else {}
+    body = await req.json() if req.body_exists else {}
     start_date = str(body.get("start_date") or datetime.date.today().isoformat()).strip()
     end_date = str(body.get("end_date") or "2099-12-31").strip()
+    try:
+        datetime.date.fromisoformat(start_date)
+        datetime.date.fromisoformat(end_date)
+    except ValueError:
+        return web.json_response({"error": "start_date/end_date must be YYYY-MM-DD"}, status=400)
     sched = _load_work_schedule()
     day_to_num = {k: i + 1 for i, k in enumerate(DAY_KEYS)}
 
-    flashable = [
-        r for r in sched.get("rules", [])
-        if r.get("enabled", True) and r.get("kind") in ("gif", "hw_clock")
-    ][:8]
-    if not flashable:
-        return web.json_response({"error": "No enabled GIF or Clock rules to flash"}, status=400)
+    skipped: List[Dict[str, str]] = []
+    planned: List[Dict[str, Any]] = []
+    for rule in sched.get("rules", []):
+        if not rule.get("enabled", True):
+            continue
+        name = rule.get("name", rule.get("target", "Rule"))
+        if rule.get("kind") not in ("gif", "hw_clock"):
+            skipped.append({"name": name, "reason": "Power-off rules can't run on-device; use the display's power schedule"})
+            continue
+        if rule.get("kind") == "gif" and _resolve_gif(rule.get("target", "")) is None:
+            skipped.append({"name": name, "reason": "GIF not found"})
+            continue
+        progs = _rule_device_programs(rule)
+        if len(planned) + len(progs) > len(SCHEDULE_SLOTS):
+            skipped.append({"name": name, "reason": f"Only {len(SCHEDULE_SLOTS)} on-device slots"})
+            continue
+        planned.extend({"rule": rule, **prog} for prog in progs)
+    if not planned:
+        return web.json_response({"error": "No enabled GIF or Clock rules to flash", "skipped": skipped}, status=400)
 
     flashed: List[Dict[str, Any]] = []
-    async with state.lock:
-        t = state.transport
-        await _ensure_exit_modal_mode()
-        await t.send_frame(cmd_sync_time(sno=t.next_sno()))
-        for idx, rule in enumerate(flashable):
-            slot = idx + 1
-            weekdays = [day_to_num[d.lower()] for d in rule.get("days", DAY_KEYS) if d.lower() in day_to_num] or [1, 2, 3, 4, 5, 6, 7]
-            s_t = str(rule.get("start", "08:00"))
-            e_t = str(rule.get("end", "18:00"))
-            windows = [f"{s_t}-23:59", f"00:00-{e_t}"] if _hhmm_to_min(s_t) > _hhmm_to_min(e_t) else [f"{s_t}-{e_t}"]
-            period_tlv = encode_period_pro_tlv(windows, weekdays=weekdays, start_date=start_date, end_date=end_date)
-
-            kind = rule.get("kind")
-            target = str(rule.get("target", ""))
-            if kind == "gif":
-                gif_path = GIFS_DIR / Path(target).name
-                if not gif_path.is_file():
-                    continue
-                wire_frames = build_gif_program_frames(
-                    gif_path.read_bytes(), state.width, state.height,
-                    program_id=slot, start_sno=t.next_sno(), show_now=False, data_save=0,
-                    period_pro_tlv=period_tlv,
-                )
-            else:
-                fg = _parse_hex_rgb(rule.get("color", "#38bdf8"))
-                accent = _parse_hex_rgb(rule.get("accent", "#ec4899"))
-                bg_res = _render_hw_clock_shape_bg(state.width, state.height, target, fg, accent, (0, 0, 0))
-                regions = _build_hw_clock_regions(target, state.width, state.height, fg, accent, (0, 0, 0))
-                if regions is None:
-                    continue
-                wire_frames = build_multi_region_hw_clock_frames(
-                    regions, state.width, state.height,
-                    program_id=slot, start_sno=t.next_sno(), show_now=False, data_save=0,
-                    background_resource=bg_res, period_pro_tlv=period_tlv,
-                )
-            await t.send_frames(wire_frames, label=f"Flash Slot {slot}: {rule.get('name', target)}")
-            flashed.append({"slot": slot, "name": rule.get("name", target), "windows": windows})
-
-        await t.send_frame(cmd_pgm_play(model=0, index=0, sno=t.next_sno()))
+    try:
+        _require_transport()
+        async with state.lock:
+            t = _require_transport()
+            await _ensure_exit_modal_mode()
+            await t.send_frame(cmd_sync_time(sno=t.next_sno()))
+            # Clear stale schedule programs from an earlier flash before writing new ones
+            await t.send_frame(cmd_delete_programs(list(SCHEDULE_SLOTS), sno=t.next_sno()))
+            for slot, item in zip(SCHEDULE_SLOTS, planned):
+                rule = item["rule"]
+                weekdays = [day_to_num[d] for d in item["days"]] or list(range(1, 8))
+                period_tlv = encode_period_pro_tlv(item["windows"], weekdays=weekdays, start_date=start_date, end_date=end_date)
+                if rule["kind"] == "gif":
+                    gif_path = _resolve_gif(rule["target"])
+                    assert gif_path is not None
+                    wire_frames = build_gif_program_frames(
+                        gif_path.read_bytes(), state.width, state.height,
+                        program_id=slot, start_sno=t.next_sno(), show_now=False, data_save=0,
+                        period_pro_tlv=period_tlv,
+                    )
+                else:
+                    fg = _parse_hex_rgb(rule.get("color", "#38bdf8"))
+                    accent = _parse_hex_rgb(rule.get("accent", "#ec4899"))
+                    bg_res = _render_hw_clock_shape_bg(state.width, state.height, rule["target"], fg, accent, (0, 0, 0))
+                    regions = _clock_regions_or_default(rule["target"], state.width, state.height, fg, accent, (0, 0, 0))
+                    wire_frames = build_multi_region_hw_clock_frames(
+                        regions, state.width, state.height,
+                        program_id=slot, start_sno=t.next_sno(), show_now=False, data_save=0,
+                        background_resource=bg_res, period_pro_tlv=period_tlv,
+                    )
+                _reserve_snos(t, wire_frames)
+                await t.send_frames(wire_frames, label=f"Flash Slot {slot}: {rule.get('name', rule['target'])}")
+                flashed.append({"slot": slot, "name": rule.get("name", rule["target"]), "days": item["days"], "windows": item["windows"]})
+            await _start_device_schedule_locked(t)
+    except DisplayNotConnected as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        log.exception("Flashing on-device schedule failed")
+        return web.json_response({"error": f"Flashing stopped part-way: {exc}", "flashed": flashed, "skipped": skipped}, status=500)
 
     sched["flashed_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     sched["flashed_count"] = len(flashed)
+    sched["device_mode"] = True
     _save_work_schedule(sched)
     state.set_now_playing(
         "schedule", f"On-Device Schedule ({len(flashed)} slots)",
         subtitle=f"{start_date} → {end_date} · Runs offline on display RTC",
         source="Device Flash",
     )
-    return web.json_response({"ok": True, "flashed": flashed, "start_date": start_date, "end_date": end_date})
+    return web.json_response({"ok": True, "flashed": flashed, "skipped": skipped, "start_date": start_date, "end_date": end_date})
 
 
-async def _apply_schedule_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
-    if not state.transport or not state.transport.is_connected:
-        raise RuntimeError("Not connected to display")
+async def _start_device_schedule_locked(t: Any) -> None:
+    """Hand the panel to its Flash schedule. Caller holds `state.lock`.
+    Live slots are removed so sequence playback (model 0) only cycles the scheduled programs."""
+    await _end_temp_alert(restore_previous=False)
+    # Switch to sequence playback FIRST, then remove the live slots: deleting the program
+    # that is on screen could flash the factory intro (zero-flicker rule).
+    await t.send_frame(cmd_pgm_play(model=0, index=0, sno=t.next_sno()))
+    await t.send_frame(cmd_delete_programs(list(LIVE_SLOTS), sno=t.next_sno()))
+    state.device_schedule_active = True
+    state.save_display_state()
+
+
+async def handle_work_schedule_device_mode(req: web.Request) -> web.Response:
+    """POST {"action": "resume"} hands control back to the on-device schedule;
+    {"action": "stop"} deletes it from the panel and returns control to the Mac scheduler."""
+    body = await req.json()
+    action = str(body.get("action", ""))
+    sched = _load_work_schedule()
+    try:
+        _require_transport()
+        async with state.lock:
+            t = _require_transport()
+            await _exit_modal_mode()
+            if action == "resume":
+                if not sched.get("flashed_count"):
+                    return web.json_response({"error": "No on-device schedule has been flashed yet"}, status=400)
+                await _start_device_schedule_locked(t)
+                sched["device_mode"] = True
+            elif action == "stop":
+                await t.send_frame(cmd_delete_programs(list(SCHEDULE_SLOTS), sno=t.next_sno()))
+                state.device_schedule_active = False
+                state.save_display_state()
+                sched.update(device_mode=False, flashed_count=0, flashed_at=None)
+            else:
+                return web.json_response({"error": "action must be 'resume' or 'stop'"}, status=400)
+    except DisplayNotConnected as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    _save_work_schedule(sched)
+    if action == "resume":
+        state.set_now_playing("schedule", "On-Device Schedule", subtitle="Runs offline on display RTC", source="Device Flash")
+    else:
+        state.last_applied_rule_id = None  # let the Mac scheduler apply the current rule again
+        state.broadcast_soon("status_update", state.status_dict())
+    return web.json_response({"ok": True, "device_mode": bool(sched.get("device_mode"))})
+
+
+async def _apply_schedule_rule(
+    rule: Dict[str, Any],
+    *,
+    source: str = "Schedule",
+    persist: bool = True,
+    track: bool = True,
+) -> Dict[str, Any]:
+    """Apply one schedule/context rule through the double-buffered present_program() path."""
+    _require_transport()
     kind = str(rule.get("kind", "gif"))
     target = str(rule.get("target", ""))
     bri = rule.get("brightness")
+    name = str(rule.get("name", target))
 
     async with state.lock:
-        t = state.transport
-        if state.in_modal_mode:
-            await t.send_frame(cmd_game_action("exit", sno=t.next_sno()))
-            state.in_modal_mode = False
+        t = _require_transport()
         if kind == "power_off":
+            await _ensure_exit_modal_mode()
             await t.send_frame(cmd_set_power(False, sno=t.next_sno()))
             state.power_on = False
         else:
@@ -2654,34 +3052,47 @@ async def _apply_schedule_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
                 lvl = max(1, min(15, int(bri)))
                 await t.send_frame(cmd_set_brightness(lvl, sno=t.next_sno()))
                 state.brightness = lvl
-            if kind == "gif":
-                path = GIFS_DIR / Path(target).name
-                if not path.exists():
-                    raise FileNotFoundError(f"Scheduled GIF not found: {target}")
-                gif_bytes = path.read_bytes()
-                wire_frames = build_gif_program_frames(
-                    gif_bytes, state.width, state.height, program_id=1, start_sno=t.next_sno(), show_now=True
-                )
-                await t.send_frames(wire_frames, label=f"Schedule: {rule.get('name', target)}")
-                await t.send_frame(cmd_pgm_play(model=1, index=0, sno=t.next_sno()))
-            elif kind == "hw_clock":
-                await t.send_frame(cmd_sync_time(sno=t.next_sno()))
-                w, h = state.width, state.height
-                shape = target or "hw_neon_ring"
-                fg, accent, bg = (0, 240, 255), (255, 43, 214), (0, 0, 0)
-                bg_resource = _render_hw_clock_shape_bg(w, h, shape, fg, accent, bg)
-                regions = _build_hw_clock_regions(shape, w, h, fg, accent, bg) or [
-                    {"template": "{hh}:{mm}", "x": 6, "y": 16, "w": w - 12, "h": 21, "color": fg, "bg_color": bg, "font_size": 16},
-                    {"template": "{MM}/{DD}", "x": 10, "y": 37, "w": w - 20, "h": 16, "color": accent, "bg_color": bg, "font_size": 12},
-                ]
-                wire_frames = build_multi_region_hw_clock_frames(
-                    regions, w, h, program_id=1, start_sno=t.next_sno(), show_now=True, background_resource=bg_resource
-                )
-                await t.send_frames(wire_frames, label=f"Schedule: {rule.get('name', shape)}")
-                await t.send_frame(cmd_pgm_play(model=1, index=0, sno=t.next_sno()))
+
+    if kind == "power_off":
+        state.set_now_playing("power", name, subtitle=f"Screen off · via {source}", source=source)
+    elif kind == "gif":
+        path = _resolve_gif(target)
+        if path is None:
+            raise FileNotFoundError(f"Scheduled GIF not found: {target}")
+        pretty = path.stem.replace("_", " ").title()
+        await present_program(
+            functools.partial(build_gif_program_frames, path.read_bytes(), state.width, state.height),
+            label=f"Schedule: {name}", persist=persist,
+            now_playing=dict(kind="gif", title=pretty, subtitle=f"{name} · via {source}",
+                             preview_url=_gif_url(path), source=source),
+        )
+    elif kind == "hw_clock":
+        w, h = state.width, state.height
+        shape = target or "hw_neon_ring"
+        fg = _parse_hex_rgb(rule["color"]) if rule.get("color") else (0, 240, 255)
+        accent = _parse_hex_rgb(rule["accent"]) if rule.get("accent") else (255, 43, 214)
+        bg = (0, 0, 0)
+        bg_resource = _render_hw_clock_shape_bg(w, h, shape, fg, accent, bg)
+        regions = _clock_regions_or_default(shape, w, h, fg, accent, bg)
+        fg_hex = "#%02x%02x%02x" % fg
+        acc_hex = "#%02x%02x%02x" % accent
+        await present_program(
+            functools.partial(build_multi_region_hw_clock_frames, regions, w, h, background_resource=bg_resource),
+            label=f"Schedule: {name}", persist=persist, sync_time=True,
+            now_playing=dict(
+                kind="clock", title=shape.replace("hw_", "").replace("_", " ").title() + " Clock",
+                subtitle=f"{name} · via {source}",
+                preview_url=f"/api/hw_clock_preview/{shape}?color={urllib.parse.quote(fg_hex)}&accent={urllib.parse.quote(acc_hex)}",
+                source=source,
+            ),
+        )
+    else:
+        raise ValueError(f"Unknown rule kind: {kind}")
+
+    if track:
         state.last_applied_rule_id = rule.get("id")
-        state.broadcast_soon("status_update", state.status_dict())
-        state.broadcast_soon("schedule_update", {"active_rule_id": state.last_applied_rule_id, "rule": rule})
+    state.broadcast_soon("status_update", state.status_dict())
+    state.broadcast_soon("schedule_update", {"active_rule_id": state.last_applied_rule_id, "rule": rule})
     return {"ok": True, "applied": rule}
 
 
@@ -2702,40 +3113,45 @@ SCHEDULE_PRESETS: Dict[str, List[Dict[str, Any]]] = {
 }
 
 
+def _schedule_response(sched: Dict[str, Any], **extra: Any) -> web.Response:
+    now = datetime.datetime.now()
+    payload = {
+        "enabled": bool(sched.get("enabled", True)),
+        "rules": sched.get("rules", []),
+        "matched_rule": _match_schedule_rule(sched.get("rules", []), now),
+        "active_rule_id": state.last_applied_rule_id,
+        "device_mode": bool(sched.get("device_mode", False)),
+        "flashed_count": sched.get("flashed_count", 0),
+        "device_slots": len(SCHEDULE_SLOTS),
+        "now": now.strftime("%a %H:%M"),
+        "now_day": DAY_KEYS[now.weekday()],
+        "now_minutes": now.hour * 60 + now.minute,
+    }
+    payload.update(extra)
+    return web.json_response(payload)
+
+
 async def handle_work_schedule(req: web.Request) -> web.Response:
     if req.method == "GET":
-        sched = _load_work_schedule()
-        now = datetime.datetime.now()
-        matched = _match_schedule_rule(sched.get("rules", []), now)
-        gifs = sorted(p.name for p in GIFS_DIR.glob("*.gif")) if GIFS_DIR.exists() else []
-        return web.json_response({
-            "enabled": bool(sched.get("enabled", True)),
-            "rules": sched.get("rules", []),
-            "matched_rule": matched,
-            "active_rule_id": getattr(state, "last_applied_rule_id", None),
-            "now": now.strftime("%a %H:%M"),
-            "now_day": DAY_KEYS[now.weekday()],
-            "now_minutes": now.hour * 60 + now.minute,
-            "available_gifs": gifs,
-        })
+        return _schedule_response(_load_work_schedule(), available_gifs=[p.name for p in _all_gif_paths()])
     body = await req.json()
     sched = _load_work_schedule()
     if "enabled" in body:
         sched["enabled"] = bool(body["enabled"])
-    if isinstance(body.get("rules"), list):
-        sched["rules"] = body["rules"]
+    if "rules" in body:
+        raw_rules = body["rules"]
+        if not isinstance(raw_rules, list):
+            return web.json_response({"error": "rules must be a list"}, status=400)
+        if len(raw_rules) > MAX_RULES:
+            return web.json_response({"error": f"Too many rules (max {MAX_RULES})"}, status=400)
+        try:
+            sched["rules"] = [_normalize_rule(r, i, strict=True) for i, r in enumerate(raw_rules)]
+        except (ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
     _save_work_schedule(sched)
-    now = datetime.datetime.now()
-    matched = _match_schedule_rule(sched.get("rules", []), now)
-    return web.json_response({
-        "ok": True,
-        "enabled": sched["enabled"],
-        "rules": sched["rules"],
-        "matched_rule": matched,
-        "now": now.strftime("%a %H:%M"),
-        "now_day": DAY_KEYS[now.weekday()],
-        "now_minutes": now.hour * 60 + now.minute,
-    })
+    state.broadcast_soon("schedule_update", {"active_rule_id": state.last_applied_rule_id})
+    state.broadcast_soon("status_update", state.status_dict())
+    return _schedule_response(sched, ok=True)
 
 
 async def handle_work_schedule_apply(_req: web.Request) -> web.Response:
@@ -2744,21 +3160,28 @@ async def handle_work_schedule_apply(_req: web.Request) -> web.Response:
     if not matched:
         return web.json_response({"error": "No schedule rule matches the current day & time"}, status=404)
     try:
-        res = await _apply_schedule_rule(matched)
-        return web.json_response(res)
+        return web.json_response(await _apply_schedule_rule(matched, source="Schedule"))
+    except DisplayNotConnected as exc:
+        return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
+        log.exception("Applying schedule rule failed")
         return web.json_response({"error": str(exc)}, status=500)
 
 
 async def handle_work_schedule_test_rule(req: web.Request) -> web.Response:
     body = await req.json()
-    rule = body.get("rule") if isinstance(body, dict) else None
-    if not isinstance(rule, dict):
+    raw = body.get("rule") if isinstance(body, dict) else None
+    if not isinstance(raw, dict):
         return web.json_response({"error": "Missing rule object"}, status=400)
     try:
-        res = await _apply_schedule_rule(rule)
-        return web.json_response(res)
+        rule = _normalize_rule(raw, 0, strict=True)
+        return web.json_response(await _apply_schedule_rule(rule, source=_detect_req_source(req), track=False))
+    except DisplayNotConnected as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except (ValueError, TypeError, FileNotFoundError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
+        log.exception("Testing schedule rule failed")
         return web.json_response({"error": str(exc)}, status=500)
 
 
@@ -2768,87 +3191,89 @@ async def handle_work_schedule_preset(req: web.Request) -> web.Response:
     if preset not in SCHEDULE_PRESETS:
         return web.json_response({"error": f"Unknown preset: {preset}"}, status=400)
     sched = _load_work_schedule()
-    sched["rules"] = json.loads(json.dumps(SCHEDULE_PRESETS[preset]))
+    sched["rules"] = [_normalize_rule(r, i, strict=False) for i, r in enumerate(SCHEDULE_PRESETS[preset])]
     _save_work_schedule(sched)
-    now = datetime.datetime.now()
-    return web.json_response({
-        "ok": True,
-        "preset": preset,
-        "enabled": sched["enabled"],
-        "rules": sched["rules"],
-        "matched_rule": _match_schedule_rule(sched["rules"], now),
-        "now": now.strftime("%a %H:%M"),
-        "now_day": DAY_KEYS[now.weekday()],
-        "now_minutes": now.hour * 60 + now.minute,
-    })
+    state.broadcast_soon("schedule_update", {"active_rule_id": state.last_applied_rule_id})
+    return _schedule_response(sched, ok=True, preset=preset)
+
+
+_SMART_CONFIG_TYPES: Dict[str, type] = {k: type(v) for k, v in DEFAULT_SMART_CONFIG.items()}
+
+
+def _coerce_smart_value(key: str, value: Any) -> Any:
+    want = _SMART_CONFIG_TYPES[key]
+    if want is bool:
+        return bool(value)
+    if want is int:
+        return max(1, min(1440, int(value)))
+    return str(value or "").strip()[:300]
 
 
 def _load_smart_config() -> Dict[str, Any]:
     cfg = dict(DEFAULT_SMART_CONFIG)
-    if SMART_CONFIG_FILE.exists():
-        try:
-            saved = json.loads(SMART_CONFIG_FILE.read_text(encoding="utf-8"))
-            if isinstance(saved, dict):
-                cfg.update(saved)
-        except Exception:
-            pass
+    saved = read_json(SMART_CONFIG_FILE, dict, validate=lambda d: isinstance(d, dict))
+    for k, v in saved.items():
+        if k in cfg:
+            try:
+                cfg[k] = _coerce_smart_value(k, v)
+            except (TypeError, ValueError):
+                pass
     return cfg
 
 
 def _save_smart_config(cfg: Dict[str, Any]) -> None:
-    SMART_CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    atomic_write_json(SMART_CONFIG_FILE, cfg)
 
 
-async def _flash_temporary_gif(gif_bytes: bytes, label: str, duration_s: float = 10.0, brightness: Optional[int] = None) -> Dict[str, Any]:
-    """Upload a temporary alert GIF to Slot 2 (RAM-only) and automatically restore Slot 1 after duration_s."""
-    if not state.transport or not state.transport.is_connected:
-        raise RuntimeError("Not connected to display")
-
-    prev_task = getattr(state, "_notify_restore_task", None)
-    if prev_task and not prev_task.done():
-        prev_task.cancel()
-
-    prev_bri = state.brightness
+async def _flash_temporary_gif(
+    gif_bytes: bytes, label: str, duration_s: float = 10.0, brightness: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Show a temporary alert from RAM Slot 3 and restore the visible live slot after `duration_s`
+    (duration_s <= 0 keeps the alert until the next upload). The live slots are never touched,
+    so restoring is just a switch back + deleting Slot 3.
+    """
+    _require_transport()
+    duration_s = float(duration_s)
+    if duration_s > 0:
+        duration_s = max(1.0, min(3600.0, duration_s))
     async with state.lock:
-        t = state.transport
-        await _ensure_exit_modal_mode(clear_temp_alert=False)
+        t = _require_transport()
+        _cancel_alert_restore()  # safe: we hold the lock, so the old restore is not mid-frame
+        await _exit_modal_mode()
         if not state.power_on:
             await t.send_frame(cmd_set_power(True, sno=t.next_sno()))
             state.power_on = True
         if brightness is not None:
             await t.send_frame(cmd_set_brightness(max(1, min(15, int(brightness))), sno=t.next_sno()))
+            state.alert_brightness_changed = True  # state.brightness keeps the level to restore
         wire_frames = build_gif_program_frames(
-            gif_bytes, state.width, state.height, program_id=3, start_sno=t.next_sno(), show_now=False, data_save=1
+            gif_bytes, state.width, state.height, program_id=ALERT_SLOT,
+            start_sno=t.next_sno(), show_now=False, data_save=1,
         )
+        _reserve_snos(t, wire_frames)
         res = await t.send_frames(wire_frames, label=label)
-        await t.send_frame(cmd_dispatch_program(3, sno=t.next_sno()))
-        await t.send_frame(cmd_pgm_play(model=1, index=2, sno=t.next_sno()))
-        state._temp_alert_active = True
+        await t.send_frame(cmd_dispatch_program(ALERT_SLOT, sno=t.next_sno()))
+        await t.send_frame(cmd_pgm_play(model=1, index=(ALERT_SLOT - 1) & 0xFF, sno=t.next_sno()))
+        state.temp_alert_active = True
+        state.save_display_state()
+        if duration_s > 0:
+            state.notify_restore_task = asyncio.create_task(_restore_after_alert(duration_s))
+    return {"ok": True, "wire_frames": len(wire_frames), "duration_s": duration_s, "last_ack": res[-1] if res else None}
 
-    async def _restore_slot1() -> None:
+
+async def _restore_after_alert(delay_s: float) -> None:
+    me = asyncio.current_task()
+    await asyncio.sleep(delay_s)
+    async with state.lock:
+        if state.notify_restore_task is not me:
+            return  # superseded by a newer alert or an upload
+        state.notify_restore_task = None
         try:
-            await asyncio.sleep(max(1.0, float(duration_s)))
-            if not state.transport or not state.transport.is_connected:
-                state._temp_alert_active = False
-                return
-            async with state.lock:
-                if not getattr(state, "_temp_alert_active", False):
-                    return
-                t2 = state.transport
-                if brightness is not None:
-                    await t2.send_frame(cmd_set_brightness(max(1, min(15, int(prev_bri))), sno=t2.next_sno()))
-                await t2.send_frame(cmd_delete_programs([3], sno=t2.next_sno()))
-                await t2.send_frame(cmd_dispatch_program(state.active_slot, sno=t2.next_sno()))
-                await t2.send_frame(cmd_pgm_play(model=1, index=(state.active_slot - 1) & 0xFF, sno=t2.next_sno()))
-                state._temp_alert_active = False
-        except asyncio.CancelledError:
-            pass
+            # If BLE is down, the flag stays set and _resync_after_connect() restores on reconnect.
+            await _end_temp_alert(restore_previous=True)
         except Exception:
-            state._temp_alert_active = False
-
-    if duration_s > 0:
-        state._notify_restore_task = asyncio.create_task(_restore_slot1())
-    return {"ok": True, "wire_frames": len(wire_frames), "duration_s": duration_s, "last_ack": res[-1]}
+            log.exception("Restoring display after alert failed")
 
 
 async def handle_notify(req: web.Request) -> web.Response:
@@ -2879,68 +3304,54 @@ async def handle_hydration_now(req: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=500)
 
 
-async def _upload_weather_clock(city: str, source: str = "App") -> Dict[str, Any]:
-    if not state.transport or not state.transport.is_connected:
-        raise RuntimeError("Not connected to display")
+async def _upload_weather_clock(city: str, source: str = "App", *, persist: bool = True) -> Dict[str, Any]:
+    _require_transport()
     wx = await asyncio.to_thread(fetch_open_meteo_weather, city)
-    state._weather_cache = {**wx, "ts": round(time.time(), 1)}
+    state.weather_cache = {**wx, "ts": round(time.time(), 1)}
     bg_gif = render_weather_clock_bg_gif(wx["temp_c"], wx["kind"], wx["city"], size=state.width)
     w, h = state.width, state.height
     regions = [
         {"template": "{hh}:{mm}", "x": 4, "y": 4, "w": w - 8, "h": 24, "color": (255, 255, 255), "bg_color": (0, 0, 0), "font_size": 16},
     ]
-    async with state.lock:
-        t = state.transport
-        await _ensure_exit_modal_mode()
-        slot = state.next_back_slot()
-        await t.send_frame(cmd_sync_time(sno=t.next_sno()))
-        wire_frames = build_multi_region_hw_clock_frames(
-            regions, w, h, program_id=slot, start_sno=t.next_sno(), show_now=False,
-            background_resource=bg_gif, bg_mode="behind",
-        )
-        res = await t.send_frames(wire_frames, label=f"Weather: {wx['city']} {wx['temp_c']}C")
-        await t.send_frame(cmd_dispatch_program(slot, sno=t.next_sno()))
-        await t.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=t.next_sno()))
-        state.active_slot = slot
     b64_prev = "data:image/gif;base64," + base64.b64encode(bg_gif).decode("ascii")
-    state.set_now_playing(
-        "clock", f"Weather Clock · {wx['city']} {wx['temp_c']}°C",
-        subtitle=f"{wx['kind'].replace('_', ' ').title()} · via {source}",
-        active_pin="pinWxClock", preview_url=b64_prev, overlay_clock=True, source=source,
+    res = await present_program(
+        functools.partial(build_multi_region_hw_clock_frames, regions, w, h, background_resource=bg_gif, bg_mode="behind"),
+        label=f"Weather: {wx['city']} {wx['temp_c']}C",
+        persist=persist,
+        sync_time=True,
+        now_playing=dict(
+            kind="clock", title=f"Weather Clock · {wx['city']} {wx['temp_c']}°C",
+            subtitle=f"{wx['kind'].replace('_', ' ').title()} · via {source}",
+            active_pin="pinWxClock", preview_url=b64_prev, overlay_clock=True, source=source,
+        ),
     )
-    return {"ok": True, "weather": wx, "wire_frames": len(wire_frames), "last_ack": res[-1]}
+    return {**res, "weather": wx}
 
 
-async def _upload_calendar_clock(ics_url: str = "", calendar_name: str = "", source: str = "App") -> Dict[str, Any]:
-    if not state.transport or not state.transport.is_connected:
-        raise RuntimeError("Not connected to display")
+async def _upload_calendar_clock(
+    ics_url: str = "", calendar_name: str = "", source: str = "App", *, persist: bool = True
+) -> Dict[str, Any]:
+    _require_transport()
     ev = await asyncio.to_thread(get_upcoming_calendar_event, 480, ics_url, calendar_name)
     bg_gif = render_calendar_clock_bg_gif(ev, size=state.width)
     w, h = state.width, state.height
     regions = [
         {"template": "{hh}:{mm}", "x": 4, "y": 4, "w": w - 8, "h": 24, "color": (255, 255, 255), "bg_color": (0, 0, 0), "font_size": 16},
     ]
-    async with state.lock:
-        t = state.transport
-        await _ensure_exit_modal_mode()
-        slot = state.next_back_slot()
-        await t.send_frame(cmd_sync_time(sno=t.next_sno()))
-        wire_frames = build_multi_region_hw_clock_frames(
-            regions, w, h, program_id=slot, start_sno=t.next_sno(), show_now=False,
-            background_resource=bg_gif, bg_mode="behind",
-        )
-        lbl = f"Cal: {ev['title']} ({ev['minutes_left']}m)" if ev else "Cal Clock: Free"
-        res = await t.send_frames(wire_frames, label=lbl)
-        await t.send_frame(cmd_dispatch_program(slot, sno=t.next_sno()))
-        await t.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=t.next_sno()))
-        state.active_slot = slot
+    lbl = f"Cal: {ev['title']} ({ev['minutes_left']}m)" if ev else "Cal Clock: Free"
     b64_prev = "data:image/gif;base64," + base64.b64encode(bg_gif).decode("ascii")
     sub = f"Next: {ev['title']} in {ev['minutes_left']}m · via {source}" if ev else f"No meetings today · via {source}"
-    state.set_now_playing(
-        "clock", "Workday Calendar Clock",
-        subtitle=sub, active_pin="pinCalClock", preview_url=b64_prev, overlay_clock=True, source=source,
+    res = await present_program(
+        functools.partial(build_multi_region_hw_clock_frames, regions, w, h, background_resource=bg_gif, bg_mode="behind"),
+        label=lbl,
+        persist=persist,
+        sync_time=True,
+        now_playing=dict(
+            kind="clock", title="Workday Calendar Clock", subtitle=sub,
+            active_pin="pinCalClock", preview_url=b64_prev, overlay_clock=True, source=source,
+        ),
     )
-    return {"ok": True, "event": ev, "wire_frames": len(wire_frames), "last_ack": res[-1]}
+    return {**res, "event": ev}
 
 
 async def handle_calendar_clock(req: web.Request) -> web.Response:
@@ -3012,15 +3423,44 @@ def _get_github_token() -> str:
     return ""
 
 
+def _machine_arch() -> str:
+    import platform
+
+    m = platform.machine().lower()
+    if m in ("arm64", "aarch64"):
+        return "arm64"
+    if m in ("x86_64", "amd64"):
+        return "x64"
+    return m
+
+
+def _pick_release_asset(assets: List[Dict[str, Any]]) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Choose the portable zip for this OS *and* CPU. Returns (asset, error)."""
+    want_os = "macos" if sys.platform == "darwin" else ("windows" if sys.platform == "win32" else "linux")
+    arch = _machine_arch()
+    arch_aliases = {"arm64": ("arm64", "aarch64", "universal"), "x64": ("x64", "x86_64", "amd64", "intel", "universal")}
+    zips = [a for a in assets if str(a.get("name", "")).lower().endswith(".zip") and want_os in str(a.get("name", "")).lower()]
+    if not zips:
+        return None, f"No {want_os} build in this release"
+    for alias in arch_aliases.get(arch, (arch,)):
+        for a in zips:
+            if alias in str(a.get("name", "")).lower():
+                return a, None
+    named_archs = [al for als in arch_aliases.values() for al in als]
+    untagged = [a for a in zips if not any(al in str(a.get("name", "")).lower() for al in named_archs)]
+    if untagged:
+        return untagged[0], None
+    return None, f"This release has no {want_os} build for your CPU ({arch})"
+
+
 def _check_github_update() -> Dict[str, Any]:
     from app.smart_features import _build_ssl_context
 
     tok = _get_github_token()
     headers = {"Accept": "application/vnd.github+json", "User-Agent": f"LOY-Studio/{APP_VERSION}"}
+    req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest", headers=headers)
     if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-    req = urllib.request.Request(url, headers=headers)
+        req.add_unredirected_header("Authorization", f"Bearer {tok}")
     try:
         with urllib.request.urlopen(req, timeout=8, context=_build_ssl_context()) as r:
             rel = json.loads(r.read().decode("utf-8"))
@@ -3036,8 +3476,10 @@ def _check_github_update() -> Dict[str, Any]:
 
     tag = str(rel.get("tag_name") or "").lstrip("vV")
     assets = rel.get("assets") or []
-    want = "macOS" if sys.platform == "darwin" else ("Windows" if sys.platform == "win32" else "Linux")
-    chosen = next((a for a in assets if want.lower() in str(a.get("name", "")).lower()), None)
+    chosen, asset_error = _pick_release_asset(assets)
+    by_name = {str(a.get("name", "")): a for a in assets}
+    sums = by_name.get("SHA256SUMS")
+    sig = by_name.get("SHA256SUMS.sig")
     return {
         "ok": True,
         "current_version": APP_VERSION,
@@ -3046,8 +3488,12 @@ def _check_github_update() -> Dict[str, Any]:
         "release_url": rel.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases",
         "release_notes": (rel.get("body") or "")[:600],
         "asset_name": chosen.get("name") if chosen else None,
+        "asset_error": asset_error,
         "asset_api_url": chosen.get("url") if chosen else None,
         "asset_download_url": chosen.get("browser_download_url") if chosen else None,
+        "sums_url": (sums or {}).get("url"),
+        "sig_url": (sig or {}).get("url"),
+        "signed_release": bool(sig),
         "is_portable": bool(getattr(sys, "frozen", False)),
         "has_token": bool(tok),
     }
@@ -3062,22 +3508,112 @@ async def handle_update_check(_req: web.Request) -> web.Response:
 
 
 async def handle_update_token(req: web.Request) -> web.Response:
+    """Loopback-only (middleware)."""
     body = await req.json()
     tok = str(body.get("token") or "").strip()
     if tok:
-        GH_TOKEN_FILE.write_text(tok, encoding="utf-8")
-        try:
-            GH_TOKEN_FILE.chmod(0o600)
-        except OSError:
-            pass
+        if len(tok) > 400 or any(c.isspace() for c in tok):
+            return web.json_response({"error": "That does not look like a GitHub token"}, status=400)
+        atomic_write_text_private(GH_TOKEN_FILE, tok)
     else:
         GH_TOKEN_FILE.unlink(missing_ok=True)
     return web.json_response({"ok": True, "has_token": bool(tok)})
 
 
-async def handle_update_apply(_req: web.Request) -> web.Response:
+def atomic_write_text_private(path: Path, text: str) -> None:
+    from app.storage import atomic_write_text
+
+    atomic_write_text(path, text, private=True)
+
+
+def _github_download(url: str, dest: Optional[Path], tok: str, max_bytes: int) -> bytes:
+    """Download a release asset via the API URL. The token is never forwarded on the CDN redirect."""
     from app.smart_features import _build_ssl_context
 
+    req = urllib.request.Request(url, headers={"Accept": "application/octet-stream", "User-Agent": f"LOY-Studio/{APP_VERSION}"})
+    if tok and urllib.parse.urlsplit(url).hostname == "api.github.com":
+        req.add_unredirected_header("Authorization", f"Bearer {tok}")
+    h = hashlib.sha256()
+    buf = bytearray()
+    total = 0
+    with urllib.request.urlopen(req, timeout=120, context=_build_ssl_context()) as r:
+        out = dest.open("wb") if dest else None
+        try:
+            for chunk in iter(lambda: r.read(1 << 20), b""):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("Download is larger than expected")
+                h.update(chunk)
+                if out:
+                    out.write(chunk)
+                else:
+                    buf.extend(chunk)
+        finally:
+            if out:
+                out.close()
+    return h.hexdigest().encode("ascii") if dest else bytes(buf)
+
+
+# The swap scripts take every path as a positional argument (never string-interpolated into
+# shell code), wait for this process to exit, then atomically swap and relaunch.
+_MAC_SWAP_SH = r'''#!/bin/sh
+LOG="$1"; OLD_PID="$2"; NEW_APP="$3"; TARGET="$4"; TMP_DIR="$5"
+STAGE="$TARGET.new"; BACKUP="$TARGET.old"
+echo "=== LOY Studio update started $(date) ===" > "$LOG"
+echo "Installing $NEW_APP -> $TARGET (waiting for PID $OLD_PID)" >> "$LOG"
+i=0
+while kill -0 "$OLD_PID" 2>/dev/null && [ $i -lt 120 ]; do sleep 0.25; i=$((i + 1)); done
+sleep 0.4
+rm -rf "$STAGE" "$BACKUP" >> "$LOG" 2>&1
+if ! ditto "$NEW_APP" "$STAGE" >> "$LOG" 2>&1; then echo "ERROR: ditto failed" >> "$LOG"; exit 1; fi
+xattr -cr "$STAGE" >> "$LOG" 2>&1 || true
+if [ -e "$TARGET" ]; then
+  if ! mv "$TARGET" "$BACKUP" >> "$LOG" 2>&1; then echo "ERROR: could not move existing app to backup" >> "$LOG"; rm -rf "$STAGE"; exit 1; fi
+fi
+if ! mv "$STAGE" "$TARGET" >> "$LOG" 2>&1; then
+  echo "ERROR: could not move staged app into place; restoring backup" >> "$LOG"
+  [ -e "$BACKUP" ] && mv "$BACKUP" "$TARGET" >> "$LOG" 2>&1
+  exit 1
+fi
+rm -rf "$BACKUP" >> "$LOG" 2>&1 || true
+echo "Launching $TARGET" >> "$LOG"
+open -n "$TARGET" >> "$LOG" 2>&1 || open "$TARGET" >> "$LOG" 2>&1
+rm -rf "$TMP_DIR" >> "$LOG" 2>&1 || true
+echo "=== Update complete $(date) ===" >> "$LOG"
+'''
+
+_WIN_SWAP_BAT = (
+    "@echo off\r\n"
+    "setlocal\r\n"
+    'set "NEW_EXE=%~1"\r\n'
+    'set "TARGET=%~2"\r\n'
+    'set "TMP_DIR=%~3"\r\n'
+    'set "OLD_PID=%~4"\r\n'
+    ":waitloop\r\n"
+    'tasklist /FI "PID eq %OLD_PID%" 2>nul | find "%OLD_PID%" >nul\r\n'
+    "if not errorlevel 1 (\r\n"
+    "  timeout /t 1 /nobreak >nul\r\n"
+    "  goto waitloop\r\n"
+    ")\r\n"
+    'copy /y "%NEW_EXE%" "%TARGET%.new" >nul\r\n'
+    "if errorlevel 1 exit /b 1\r\n"
+    'move /y "%TARGET%.new" "%TARGET%" >nul\r\n'
+    'start "" "%TARGET%"\r\n'
+    'rmdir /s /q "%TMP_DIR%" >nul 2>&1\r\n'
+)
+
+_update_lock = asyncio.Lock()
+
+
+async def handle_update_apply(_req: web.Request) -> web.Response:
+    """Loopback-only (middleware). Download, VERIFY, then swap & relaunch."""
+    if _update_lock.locked():
+        return web.json_response({"ok": False, "error": "An update is already in progress"}, status=409)
+    async with _update_lock:
+        return await _apply_update()
+
+
+async def _apply_update() -> web.Response:
     try:
         info = await asyncio.to_thread(_check_github_update)
     except Exception as exc:
@@ -3087,7 +3623,7 @@ async def handle_update_apply(_req: web.Request) -> web.Response:
         return web.json_response(info, status=400)
     asset_url = info.get("asset_api_url") or info.get("asset_download_url")
     if not asset_url:
-        return web.json_response({"ok": False, "error": "No matching portable asset found for this OS"}, status=404)
+        return web.json_response({"ok": False, "error": info.get("asset_error") or "No matching portable asset found"}, status=404)
 
     if not getattr(sys, "frozen", False):
         return web.json_response({
@@ -3096,33 +3632,31 @@ async def handle_update_apply(_req: web.Request) -> web.Response:
             "release_url": info["release_url"],
             "message": "Running from source — open the Release URL or run git pull.",
         })
+    if not info.get("sums_url"):
+        return web.json_response({
+            "ok": False,
+            "error": "This release has no SHA256SUMS, so it can't be verified. Download it manually from the release page.",
+            "release_url": info["release_url"],
+        }, status=400)
 
     tok = _get_github_token()
     tmp_dir = Path(tempfile.mkdtemp(prefix="loy_update_"))
-    zip_path = tmp_dir / (info.get("asset_name") or "update.zip")
-
-    def _download_zip() -> int:
-        headers = {"Accept": "application/octet-stream", "User-Agent": f"LOY-Studio/{APP_VERSION}"}
-        if tok:
-            headers["Authorization"] = f"Bearer {tok}"
-        req = urllib.request.Request(asset_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=120, context=_build_ssl_context()) as r, zip_path.open("wb") as out:
-            shutil.copyfileobj(r, out)
-        return zip_path.stat().st_size
+    asset_name = str(info.get("asset_name") or "update.zip")
+    zip_path = tmp_dir / Path(asset_name).name
 
     try:
-        size_bytes = await asyncio.to_thread(_download_zip)
-        if size_bytes < 100_000:
-            return web.json_response(
-                {"ok": False, "error": f"Downloaded update archive is unexpectedly small ({size_bytes} bytes)."},
-                status=500,
-            )
+        sums = await asyncio.to_thread(_github_download, info["sums_url"], None, tok, 64 * 1024)
+        sig = await asyncio.to_thread(_github_download, info["sig_url"], None, tok, 4096) if info.get("sig_url") else None
+        zip_sha = (await asyncio.to_thread(_github_download, asset_url, zip_path, tok, 600 * 1024 * 1024)).decode("ascii")
+        verdict = verify_release(sums, sig, asset_name, zip_sha)
+        log.info("Update %s verified (sha256 %s, signed=%s)", asset_name, zip_sha, verdict["signed"])
     except Exception as exc:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        return web.json_response({"ok": False, "error": f"Download failed: {exc}"}, status=500)
+        log.warning("Update download/verification failed: %s", exc)
+        return web.json_response({"ok": False, "error": f"Update not installed: {exc}"}, status=500)
 
     install_path = ""
-    log_path = ""
+    log_path = str(DATA_DIR / "update.log")
     cur_pid = os.getpid()
 
     try:
@@ -3139,7 +3673,7 @@ async def handle_update_apply(_req: web.Request) -> web.Response:
             if not new_app:
                 return web.json_response({"ok": False, "error": "Downloaded archive did not contain a .app bundle"}, status=500)
 
-            # Handle macOS App Translocation (read-only mount) or non-writable parent dirs
+            # macOS App Translocation (read-only random mount) or a non-writable parent: install to Applications
             is_translocated = "/AppTranslocation/" in str(app_bundle)
             if is_translocated or not os.access(app_bundle.parent, os.W_OK):
                 apps_dir = Path("/Applications")
@@ -3153,59 +3687,13 @@ async def handle_update_apply(_req: web.Request) -> web.Response:
                 target_app = app_bundle
 
             install_path = str(target_app)
-            log_path = "/tmp/loy_studio_update.log"
             swap_sh = tmp_dir / "swap.sh"
-            swap_sh.write_text(
-                "#!/bin/sh\n"
-                f'LOG="{log_path}"\n'
-                f'OLD_PID="{cur_pid}"\n'
-                f'NEW_APP="{new_app}"\n'
-                f'TARGET="{target_app}"\n'
-                f'STAGE="{target_app}.new"\n'
-                f'BACKUP="{target_app}.old"\n'
-                f'TMP_DIR="{tmp_dir}"\n'
-                'echo "=== LOY Studio update started $(date) ===" > "$LOG"\n'
-                'echo "Installing $NEW_APP -> $TARGET (waiting for PID $OLD_PID)" >> "$LOG"\n'
-                'i=0\n'
-                'while kill -0 "$OLD_PID" 2>/dev/null && [ $i -lt 40 ]; do\n'
-                '  sleep 0.25\n'
-                '  i=$((i + 1))\n'
-                'done\n'
-                'sleep 0.4\n'
-                'rm -rf "$STAGE" "$BACKUP" >> "$LOG" 2>&1\n'
-                'if ! ditto "$NEW_APP" "$STAGE" >> "$LOG" 2>&1; then\n'
-                '  echo "ERROR: ditto failed" >> "$LOG"\n'
-                '  exit 1\n'
-                'fi\n'
-                'xattr -cr "$STAGE" >> "$LOG" 2>&1 || true\n'
-                'if [ -e "$TARGET" ]; then\n'
-                '  if ! mv "$TARGET" "$BACKUP" >> "$LOG" 2>&1; then\n'
-                '    echo "ERROR: could not move existing app to backup" >> "$LOG"\n'
-                '    rm -rf "$STAGE"\n'
-                '    exit 1\n'
-                '  fi\n'
-                'fi\n'
-                'if ! mv "$STAGE" "$TARGET" >> "$LOG" 2>&1; then\n'
-                '  echo "ERROR: could not move staged app into place; restoring backup" >> "$LOG"\n'
-                '  [ -e "$BACKUP" ] && mv "$BACKUP" "$TARGET" >> "$LOG" 2>&1\n'
-                '  exit 1\n'
-                'fi\n'
-                'rm -rf "$BACKUP" >> "$LOG" 2>&1 || true\n'
-                'echo "Launching $TARGET" >> "$LOG"\n'
-                'open -n "$TARGET" >> "$LOG" 2>&1 || open "$TARGET" >> "$LOG" 2>&1\n'
-                'rm -rf "$TMP_DIR" >> "$LOG" 2>&1 || true\n'
-                'echo "=== Update complete $(date) ===" >> "$LOG"\n',
-                encoding="utf-8",
-            )
-            swap_sh.chmod(0o755)
-            # Gracefully disconnect BLE right before launching the swap script and exiting
-            if state.transport and state.transport.is_connected:
-                try:
-                    await state.transport.disconnect()
-                except Exception:
-                    pass
+            swap_sh.write_text(_MAC_SWAP_SH, encoding="utf-8")
+            swap_sh.chmod(0o700)
+            # Gracefully disconnect BLE (waits for any transfer) before launching the swap script
+            await shutdown_ble("in-app update")
             subprocess.Popen(
-                ["/bin/sh", str(swap_sh)],
+                ["/bin/sh", str(swap_sh), log_path, str(cur_pid), str(new_app), str(target_app), str(tmp_dir)],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -3228,35 +3716,17 @@ async def handle_update_apply(_req: web.Request) -> web.Response:
 
             install_path = str(exe_path)
             bat = tmp_dir / "swap.bat"
-            bat.write_text(
-                f"@echo off\r\n"
-                f"setlocal\r\n"
-                f":waitloop\r\n"
-                f"tasklist /FI \"PID eq {cur_pid}\" 2>nul | find \"{cur_pid}\" >nul\r\n"
-                f"if not errorlevel 1 (\r\n"
-                f"  timeout /t 1 /nobreak >nul\r\n"
-                f"  goto waitloop\r\n"
-                f")\r\n"
-                f"copy /y \"{new_exe}\" \"{exe_path}.new\" >nul\r\n"
-                f"if errorlevel 1 exit /b 1\r\n"
-                f"move /y \"{exe_path}.new\" \"{exe_path}\" >nul\r\n"
-                f"start \"\" \"{exe_path}\"\r\n"
-                f"rmdir /s /q \"{tmp_dir}\" >nul 2>&1\r\n",
-                encoding="utf-8",
-            )
-            if state.transport and state.transport.is_connected:
-                try:
-                    await state.transport.disconnect()
-                except Exception:
-                    pass
+            bat.write_text(_WIN_SWAP_BAT, encoding="utf-8")
+            await shutdown_ble("in-app update")
             subprocess.Popen(
-                ["cmd", "/c", str(bat)],
+                ["cmd", "/c", str(bat), str(new_exe), str(exe_path), str(tmp_dir), str(cur_pid)],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=0x00000008,
             )
         else:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
             return web.json_response({
                 "ok": True,
                 "mode": "browser",
@@ -3265,6 +3735,7 @@ async def handle_update_apply(_req: web.Request) -> web.Response:
             })
     except Exception as exc:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+        log.exception("Preparing update install failed")
         return web.json_response({"ok": False, "error": f"Install preparation failed: {exc}"}, status=500)
 
     # Exit shortly after returning HTTP 200 so the swap script replaces & relaunches cleanly
@@ -3275,6 +3746,7 @@ async def handle_update_apply(_req: web.Request) -> web.Response:
         "latest_version": info["latest_version"],
         "install_path": install_path,
         "log_path": log_path,
+        "signed": verdict["signed"],
     })
 
 
@@ -3315,18 +3787,63 @@ async def handle_smart_config(req: web.Request) -> web.Response:
             "context": ctx,
             "calendars": cals,
             "calendar_auth": cal_auth,
-            "active_override": getattr(state, "_context_override", None),
-            "weather_cache": getattr(state, "_weather_cache", None),
+            "active_override": state.context_override,
+            "weather_cache": state.weather_cache,
         })
     body = await req.json()
     cfg = _load_smart_config()
     for k in DEFAULT_SMART_CONFIG:
         if k in body:
-            cfg[k] = body[k]
+            try:
+                cfg[k] = _coerce_smart_value(k, body[k])
+            except (TypeError, ValueError):
+                return web.json_response({"error": f"Invalid value for {k}"}, status=400)
+    if cfg.get("calendar_ics_url") and not re.match(r"^(https?|webcal)://", cfg["calendar_ics_url"], re.I):
+        return web.json_response({"error": "Calendar URL must start with https://, http:// or webcal://"}, status=400)
     _save_smart_config(cfg)
     state.broadcast_soon("smart_config_update", cfg)
     state.broadcast_soon("status_update", state.status_dict())
     return web.json_response({"ok": True, "config": cfg})
+
+
+class _Ticker:
+    """Logs the first failure of a periodic step (and recovery), not every 15 s retry."""
+
+    def __init__(self) -> None:
+        self.failing: Set[str] = set()
+
+    async def run(self, name: str, coro: Any) -> bool:
+        try:
+            await coro
+        except DisplayNotConnected:
+            return False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if name not in self.failing:
+                log.exception("Smart watcher step '%s' failed (will keep retrying quietly)", name)
+                self.failing.add(name)
+            return False
+        if name in self.failing:
+            log.info("Smart watcher step '%s' recovered", name)
+            self.failing.discard(name)
+        return True
+
+
+async def _end_context_override() -> None:
+    """Context (e.g. ON AIR) ended: hand back to the on-device schedule or the current Mac rule."""
+    sched = _load_work_schedule()
+    if sched.get("device_mode") and sched.get("flashed_count"):
+        async with state.lock:
+            t = _require_transport()
+            await _exit_modal_mode()
+            await _start_device_schedule_locked(t)
+        state.set_now_playing("schedule", "On-Device Schedule", subtitle="Resumed after auto mode", source="Auto")
+        return
+    if sched.get("enabled", True):
+        matched = _match_schedule_rule(sched.get("rules", []))
+        if matched:
+            await _apply_schedule_rule(matched, source="Schedule", persist=AUTO_REFRESH_PERSIST)
 
 
 async def _smart_watcher_loop() -> None:
@@ -3337,6 +3854,7 @@ async def _smart_watcher_loop() -> None:
     last_cycle_ts = 0.0
     cycle_idx = 0
     alerted_events: Set[str] = set()
+    ticker = _Ticker()
 
     while True:
         await asyncio.sleep(15.0)
@@ -3345,43 +3863,36 @@ async def _smart_watcher_loop() -> None:
                 continue
             cfg = _load_smart_config()
             now_mono = time.monotonic()
+            device_mode = bool(_load_work_schedule().get("device_mode"))
 
             # 1. Zero-Touch Mac/Windows Context Awareness
             if cfg.get("context_enabled"):
-                ctx = await asyncio.to_thread(
-                    detect_mac_context,
-                    check_calendar=False,
-                )
-                desired_override: Optional[str] = None
+                ctx = await asyncio.to_thread(detect_mac_context, check_calendar=False)
+                desired: Optional[str] = None
                 target_gif: Optional[str] = None
-
                 if cfg.get("auto_on_air") and ctx.get("in_call"):
-                    desired_override = "on_air"
-                    target_gif = "11_mode_on_air_meeting.gif"
+                    desired, target_gif = "on_air", "11_mode_on_air_meeting.gif"
                 elif cfg.get("auto_idle_brb") and ctx.get("idle_seconds", 0) >= int(cfg.get("idle_minutes", 5)) * 60:
-                    desired_override = "idle_brb"
-                    target_gif = "17_mode_away_brb.gif"
+                    desired, target_gif = "idle_brb", "17_mode_away_brb.gif"
                 elif cfg.get("auto_coding_app") and ctx.get("is_coding"):
-                    desired_override = "coding"
-                    target_gif = "10_mode_coding.gif"
+                    desired, target_gif = "coding", "10_mode_coding.gif"
 
-                cur_override = getattr(state, "_context_override", None)
-                if desired_override != cur_override:
-                    state._context_override = desired_override
-                    if desired_override and target_gif:
-                        await _apply_schedule_rule({
-                            "id": f"ctx_{desired_override}",
-                            "name": f"Auto: {desired_override}",
-                            "kind": "gif",
-                            "target": target_gif,
-                            "brightness": 14 if desired_override == "on_air" else None,
-                        })
+                if desired != state.context_override:
+                    if desired and target_gif:
+                        ok = await ticker.run("context", _apply_schedule_rule(
+                            {
+                                "id": f"ctx_{desired}", "name": f"Auto: {desired.replace('_', ' ').title()}",
+                                "kind": "gif", "target": target_gif,
+                                "brightness": 14 if desired == "on_air" else None,
+                            },
+                            source="Auto", persist=AUTO_REFRESH_PERSIST,
+                        ))
                     else:
-                        # Context override ended -> restore current scheduled rule if enabled
-                        sched = _load_work_schedule()
-                        matched = _match_schedule_rule(sched.get("rules", []))
-                        if matched:
-                            await _apply_schedule_rule(matched)
+                        ok = await ticker.run("context-end", _end_context_override())
+                    if ok:  # only record the override once it is really on the panel; otherwise retry next tick
+                        state.context_override = desired
+            elif state.context_override:
+                state.context_override = None
 
             # 1b. Independent Calendar 5-Min Meeting Alert (works even without Auto-Switch!)
             if cfg.get("calendar_alerts"):
@@ -3395,49 +3906,89 @@ async def _smart_watcher_loop() -> None:
                 if ev and 0 <= ev["minutes_left"] <= 5:
                     ev_key = f"{datetime.date.today()}:{ev['title']}"
                     if ev_key not in alerted_events:
-                        alerted_events.add(ev_key)
                         gif_b = render_notification_gif("MEETING", f"IN {ev['minutes_left']}M", style="meeting", size=state.width)
-                        await _flash_temporary_gif(gif_b, label="Calendar Alert", duration_s=12.0, brightness=14)
+                        if await ticker.run("calendar-alert", _flash_temporary_gif(gif_b, label="Calendar Alert", duration_s=12.0, brightness=14)):
+                            alerted_events.add(ev_key)
+                if len(alerted_events) > 500:
+                    alerted_events.clear()
 
             # 2. Periodic Hydration Reminder
             if cfg.get("hydration_enabled"):
                 interval_s = max(5, int(cfg.get("hydration_interval_min", 60))) * 60
                 if now_mono - last_hydration_ts >= interval_s:
                     last_hydration_ts = now_mono
-                    gif_b = render_hydration_gif(size=state.width)
-                    await _flash_temporary_gif(gif_b, label="Hydration Reminder", duration_s=12.0)
+                    await ticker.run("hydration", _flash_temporary_gif(render_hydration_gif(size=state.width), label="Hydration Reminder", duration_s=12.0))
+
+            # Periodic re-renders never override an explicit auto mode or the on-device schedule
+            idle_for_refresh = not state.context_override and not device_mode
 
             # 3. Periodic Weather Clock Auto-Refresh (every 30 min)
-            if cfg.get("weather_enabled") and not getattr(state, "_context_override", None):
-                if now_mono - last_weather_ts >= 1800.0:
-                    last_weather_ts = now_mono
-                    await _upload_weather_clock(str(cfg.get("weather_city", "Berlin")))
+            if cfg.get("weather_enabled") and idle_for_refresh and now_mono - last_weather_ts >= 1800.0:
+                last_weather_ts = now_mono
+                await ticker.run("weather", _upload_weather_clock(str(cfg.get("weather_city", "Berlin")), source="Auto", persist=AUTO_REFRESH_PERSIST))
 
             # 4. Workday Calendar + RTC Clock Auto-Refresh (Mon-Fri 08:00-19:00, every 5 min)
-            if cfg.get("calendar_clock_enabled") and not cfg.get("auto_cycle_enabled") and not getattr(state, "_context_override", None):
+            if cfg.get("calendar_clock_enabled") and not cfg.get("auto_cycle_enabled") and idle_for_refresh:
                 now_dt = datetime.datetime.now()
-                if now_dt.weekday() < 5 and 8 <= now_dt.hour < 19:
-                    if now_mono - last_cal_clock_ts >= 300.0:
-                        last_cal_clock_ts = now_mono
-                        await _upload_calendar_clock(
-                            str(cfg.get("calendar_ics_url") or ""),
-                            str(cfg.get("calendar_name") or ""),
-                        )
+                if now_dt.weekday() < 5 and 8 <= now_dt.hour < 19 and now_mono - last_cal_clock_ts >= 300.0:
+                    last_cal_clock_ts = now_mono
+                    await ticker.run("calendar-clock", _upload_calendar_clock(
+                        str(cfg.get("calendar_ics_url") or ""), str(cfg.get("calendar_name") or ""),
+                        source="Auto", persist=AUTO_REFRESH_PERSIST,
+                    ))
 
-            # 5. One-Tap Auto-Cycle (rotates Calendar Clock -> Weather Clock -> Synthwave every 5 min)
-            if cfg.get("auto_cycle_enabled") and not getattr(state, "_context_override", None):
-                if now_mono - last_cycle_ts >= 300.0:
-                    last_cycle_ts = now_mono
-                    step = cycle_idx % 3
-                    cycle_idx += 1
-                    if step == 0:
-                        await _upload_calendar_clock(str(cfg.get("calendar_ics_url") or ""), str(cfg.get("calendar_name") or ""))
-                    elif step == 1:
-                        await _upload_weather_clock(str(cfg.get("weather_city", "Berlin")))
-                    else:
-                        await _apply_schedule_rule({"id": "cycle_synth", "name": "Synthwave", "kind": "hw_clock", "target": "hw_synthwave_sun", "color": "#38bdf8", "accent": "#ec4899"})
+            # 5. One-Tap Auto-Cycle (Calendar Clock -> Weather Clock -> Synthwave every 5 min).
+            #    The Mac scheduler pauses while auto-cycle is on, so steps are not overridden.
+            if cfg.get("auto_cycle_enabled") and idle_for_refresh and now_mono - last_cycle_ts >= 300.0:
+                last_cycle_ts = now_mono
+                step = cycle_idx % 3
+                cycle_idx += 1
+                if step == 0:
+                    await ticker.run("cycle", _upload_calendar_clock(str(cfg.get("calendar_ics_url") or ""), str(cfg.get("calendar_name") or ""), source="Auto-Cycle", persist=AUTO_REFRESH_PERSIST))
+                elif step == 1:
+                    await ticker.run("cycle", _upload_weather_clock(str(cfg.get("weather_city", "Berlin")), source="Auto-Cycle", persist=AUTO_REFRESH_PERSIST))
+                else:
+                    await ticker.run("cycle", _apply_schedule_rule(
+                        {"id": "cycle_synth", "name": "Synthwave", "kind": "hw_clock", "target": "hw_synthwave_sun", "color": "#38bdf8", "accent": "#ec4899"},
+                        source="Auto-Cycle", persist=AUTO_REFRESH_PERSIST, track=False,
+                    ))
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            pass
+            log.exception("Smart watcher tick failed")
+
+
+async def shutdown_ble(reason: str = "shutdown", lock_timeout: float = 8.0) -> None:
+    """
+    Gracefully disconnect BLE (CLAUDE.md constraint 5). Safe to call more than once.
+    Stops auto-reconnect, cancels any in-flight transfer between frames, waits for the BLE
+    lock so a frame is never cut in half, then disconnects.
+    """
+    state.auto_reconnect = False
+    t = state.transport
+    if t is None:
+        return
+    t.cancel_transfer()
+    acquired = False
+    try:
+        try:
+            await asyncio.wait_for(state.lock.acquire(), timeout=lock_timeout)
+            acquired = True
+        except asyncio.TimeoutError:
+            log.warning("BLE lock still busy after %.1fs during %s; disconnecting anyway", lock_timeout, reason)
+        if t.is_connected:
+            log.info("Disconnecting BLE (%s)", reason)
+            await t.disconnect()
+    except Exception:
+        log.exception("BLE disconnect during %s failed", reason)
+    finally:
+        if acquired:
+            state.lock.release()
+
+
+async def _shutdown_ble_hook(_app: web.Application) -> None:
+    await _stop_bg_tasks(_app)
+    await shutdown_ble("server shutdown")
 
 
 async def _start_bg_tasks(app: web.Application) -> None:
@@ -3449,7 +4000,7 @@ async def _start_bg_tasks(app: web.Application) -> None:
 async def _stop_bg_tasks(app: web.Application) -> None:
     for key in ("reconnect_task", "scheduler_task", "smart_task"):
         task = app.get(key)
-        if task:
+        if task and not task.done():
             task.cancel()
             try:
                 await task
@@ -3458,21 +4009,26 @@ async def _stop_bg_tasks(app: web.Application) -> None:
 
 
 def create_app() -> web.Application:
-    app = web.Application(client_max_size=32 * 1024 * 1024, middlewares=[local_auth_middleware])
+    app = web.Application(client_max_size=32 * 1024 * 1024, middlewares=[errors_and_headers_middleware, local_auth_middleware])
     app.on_startup.append(_start_bg_tasks)
+    # on_shutdown runs for SIGINT/SIGTERM (web.run_app) and AppRunner.cleanup() (desktop app)
+    app.on_shutdown.append(_shutdown_ble_hook)
     app.on_cleanup.append(_stop_bg_tasks)
     app.router.add_get("/", handle_index)
     app.router.add_get("/ws", handle_ws)
     app.router.add_static("/static", STATIC_DIR)
     if GIFS_DIR.exists():
         app.router.add_static("/gifs", GIFS_DIR)
+    USER_GIFS_DIR.mkdir(parents=True, exist_ok=True)
+    app.router.add_static("/user_gifs", USER_GIFS_DIR)
     app.router.add_get("/api/auth/status", handle_auth_status)
     app.router.add_post("/api/auth/login", handle_auth_login)
     app.router.add_post("/api/auth/set_password", handle_auth_set_password)
     app.router.add_post("/api/auth/logout", handle_auth_logout)
+    app.router.add_get("/api/auth/sessions", handle_auth_sessions)
+    app.router.add_post("/api/auth/sessions", handle_auth_sessions)
     app.router.add_get("/api/status", handle_status)
     app.router.add_get("/api/phone_connect", handle_phone_connect)
-    app.router.add_post("/api/phone_connect/rotate", handle_rotate_token)
     app.router.add_get("/api/packets", handle_packets)
     app.router.add_get("/api/transfer", handle_transfer_status)
     app.router.add_post("/api/transfer/cancel", handle_transfer_cancel)
@@ -3514,6 +4070,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/work_schedule/test_rule", handle_work_schedule_test_rule)
     app.router.add_post("/api/work_schedule/preset", handle_work_schedule_preset)
     app.router.add_post("/api/work_schedule/flash_device", handle_work_schedule_flash_device)
+    app.router.add_post("/api/work_schedule/device_mode", handle_work_schedule_device_mode)
     app.router.add_post("/api/notify", handle_notify)
     app.router.add_post("/api/hydration_now", handle_hydration_now)
     app.router.add_post("/api/weather_clock", handle_weather_clock)
@@ -3580,6 +4137,7 @@ def main() -> None:
     state.lan_enabled = args.lan or (host == "0.0.0.0")
     port = resolve_port(host, args.port, strict=args.strict_port)
     state.bound_port = port
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     print(f"LOY Studio 2.0 running locally at http://127.0.0.1:{port}")
     if state.lan_enabled:
         lan_ip = _detect_lan_ip()

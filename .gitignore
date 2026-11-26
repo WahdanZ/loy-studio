@@ -15,6 +15,12 @@ app/.pairing_token
 app/.last_device.json
 app/.loy_server.pid
 app/loy_server.log
+app/work_schedule.json
+app/.display_state.json
+app/user_gifs/
+app/update.log
+app/*.corrupt-*
+matter/loy-pairing.json
 matter/node_modules/
 matter/.matter-storage/
 matter/.matter.pid

@@ -14,6 +14,9 @@ from .constants import (
     PACKET_TARGET_BROADCAST,
 )
 
+#: cmd_type 4 = firmware UPGRADE/OTA. Never sent by LOY Studio: it can permanently brick the panel.
+FORBIDDEN_CMD_TYPES = frozenset({4})
+
 
 def encode_tlv_length(length: int) -> bytes:
     """Encode TLV length using the protocol's 1/2/3-byte scheme (module a829 D())."""
@@ -82,6 +85,8 @@ def build_frame(
       [10..]  tlv_payload
       [-2..]  checksum (uint16 LE, if flags & 0x80)
     """
+    if (cmd_type & 0xFF) in FORBIDDEN_CMD_TYPES:
+        raise ValueError("Refusing to build an OTA/firmware-upgrade frame (cmd_type 4): risk of bricking the panel")
     has_checksum = bool(flags & FLAG_CHECKSUM)
     chk_len = 2 if has_checksum else 0
     body_len = len(tlv_payload) + chk_len + 4

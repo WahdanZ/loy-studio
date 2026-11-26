@@ -186,9 +186,15 @@ def _parse_ics_dt(raw: str) -> Optional[datetime.datetime]:
 def _fetch_upcoming_ics_event(ics_url: str, within_minutes: int = 120) -> Optional[Dict[str, Any]]:
     """Fetch a standard .ics calendar feed (Google / Outlook / Apple) and find the next meeting."""
     ctx = _build_ssl_context()
-    req = urllib.request.Request(ics_url.strip(), headers={"User-Agent": "LOY-Studio/3.0"})
+    url = ics_url.strip()
+    if url.lower().startswith("webcal://"):
+        url = "https://" + url[len("webcal://"):]
+    # Only web feeds: urllib would otherwise also open file:// and other local schemes
+    if not url.lower().startswith(("https://", "http://")):
+        raise ValueError("Calendar URL must be an https:// (or webcal://) feed")
+    req = urllib.request.Request(url, headers={"User-Agent": "LOY-Studio/3.0"})
     with urllib.request.urlopen(req, timeout=8, context=ctx) as r:
-        raw_text = r.read().decode("utf-8", errors="replace")
+        raw_text = r.read(5 * 1024 * 1024).decode("utf-8", errors="replace")
 
     # Unfold folded ICS lines (RFC 5545)
     unfolded = re.sub(r"\r?\n[ \t]", "", raw_text)

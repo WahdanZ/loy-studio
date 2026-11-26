@@ -87,7 +87,9 @@ from .image_codec import (
 )
 from .decoder import decode_response, DeviceInfo, DeviceParams
 from .transport import (
+    ALL_PROFILES,
     BLE_PROFILES,
+    EXPERIMENTAL_PROFILES,
     BleProfile,
     BleTransport,
     DiscoveredDisplay,
@@ -170,7 +172,9 @@ __all__ = [
     "decode_response",
     "DeviceInfo",
     "DeviceParams",
+    "ALL_PROFILES",
     "BLE_PROFILES",
+    "EXPERIMENTAL_PROFILES",
     "BleProfile",
     "BleTransport",
     "DiscoveredDisplay",

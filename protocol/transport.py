@@ -76,6 +76,23 @@ BLE_PROFILES: Dict[str, BleProfile] = {
         hardware_verified=True,
         description="180B chunks, 2ms pacing, stop-and-wait ACK (verified 1800 B/s on EXYC-A)",
     ),
+    "safe_ack": BleProfile(
+        name="safe_ack",
+        ble_chunk_size=180,
+        swnd_max=1,
+        write_delay_s=0.025,
+        write_with_response=True,
+        retries=4,
+        estimated_bps=2200.0,
+        hardware_verified=False,
+        description="180B Write-With-Response fallback for strict BLE stacks",
+    ),
+}
+
+# Sliding-window (swnd > 1) profiles. HARDWARE RULE: swnd > 1 wedges the panel's BLE RX
+# buffer (CLAUDE.md constraint 2). These exist ONLY for MockTransport simulation/benchmarks
+# and are never selectable on a real BleTransport.
+EXPERIMENTAL_PROFILES: Dict[str, BleProfile] = {
     "ys_l_swnd3": BleProfile(
         name="ys_l_swnd3",
         ble_chunk_size=DEFAULT_BLE_CHUNK_SIZE,
@@ -109,18 +126,9 @@ BLE_PROFILES: Dict[str, BleProfile] = {
         hardware_verified=False,
         description="509B chunks, sliding window 10 (candidate for EX* firmware >= V2.8.9#V25)",
     ),
-    "safe_ack": BleProfile(
-        name="safe_ack",
-        ble_chunk_size=180,
-        swnd_max=1,
-        write_delay_s=0.025,
-        write_with_response=True,
-        retries=4,
-        estimated_bps=2200.0,
-        hardware_verified=False,
-        description="180B Write-With-Response fallback for strict BLE stacks",
-    ),
 }
+
+ALL_PROFILES: Dict[str, BleProfile] = {**BLE_PROFILES, **EXPERIMENTAL_PROFILES}
 
 
 HIGH_SPEED_PREFIXES = (
@@ -134,8 +142,8 @@ def recommend_profile(device_name: str = "", version: str = "") -> str:
     Recommend the safest fast BLE profile based on recovered module 4156.compatibleManage()
     and real hardware verification on EXYC-A / YS*L.
     """
-    if any(p in (version or "") for p in HIGH_SPEED_PREFIXES):
-        return "balanced"
+    # Never auto-select a sliding-window profile: swnd > 1 wedges the panel (CLAUDE.md #2).
+    # High-speed EX* firmware still gets a verified stop-and-wait profile.
     if (device_name or "").endswith("L"):
         return "ys_l_fast"
     return "conservative"
@@ -162,6 +170,18 @@ class TransferProgress:
         return asdict(self)
 
 
+class DisplayNotAdvertising(RuntimeError):
+    """The panel is not advertising: it is off, or another app/process still holds its BLE link."""
+
+    def __init__(self, address: str) -> None:
+        super().__init__(
+            "Display not found over Bluetooth. It is either powered off, or still connected to another "
+            "app (LOY on your phone, or another LOY Studio window/process on this Mac). Close the other "
+            "app; if it still isn't found, unplug the display's USB power for 3 seconds and try again."
+        )
+        self.address = address
+
+
 @dataclass
 class DiscoveredDisplay:
     name: str
@@ -177,11 +197,14 @@ ProgressCallback = Callable[[TransferProgress], None]
 class BaseTransport:
     """Abstract transport interface separating protocol logic from BLE I/O."""
 
+    #: Real hardware transports must never run swnd > 1 profiles.
+    allow_experimental_profiles: bool = False
+
     def __init__(self, profile: str = "conservative") -> None:
         self._sno = 1
         self._packet_log_cb: Optional[PacketLogCallback] = None
         self._progress_cb: Optional[ProgressCallback] = None
-        self._profile: BleProfile = BLE_PROFILES.get(profile, BLE_PROFILES["conservative"])
+        self._profile: BleProfile = self._resolve_profile(profile, strict=False)
         self._cancel_event = asyncio.Event()
         self.transfer = TransferProgress(profile=self._profile.name)
         self.transfer_errors: List[Dict[str, Any]] = []
@@ -193,11 +216,24 @@ class BaseTransport:
     def profile(self) -> BleProfile:
         return self._profile
 
-    def set_profile(self, name: str) -> BleProfile:
-        if name not in BLE_PROFILES:
+    def _resolve_profile(self, name: str, *, strict: bool = True) -> BleProfile:
+        if name in BLE_PROFILES:
+            return BLE_PROFILES[name]
+        if name in EXPERIMENTAL_PROFILES:
+            if self.allow_experimental_profiles:
+                return EXPERIMENTAL_PROFILES[name]
+            if strict:
+                raise ValueError(
+                    f"BLE profile '{name}' uses sliding window {EXPERIMENTAL_PROFILES[name].swnd_max} > 1, "
+                    "which wedges the display's BLE RX buffer. Use 'ys_l_fast', 'conservative', or 'safe_ack'."
+                )
+        elif strict:
             raise ValueError(f"Unknown BLE profile '{name}'. Choose from: {list(BLE_PROFILES)}")
-        self._profile = BLE_PROFILES[name]
-        self.transfer.profile = name
+        return BLE_PROFILES["conservative"]
+
+    def set_profile(self, name: str) -> BleProfile:
+        self._profile = self._resolve_profile(name, strict=True)
+        self.transfer.profile = self._profile.name
         return self._profile
 
     def estimate_transfer_seconds(self, payload_bytes: int) -> float:
@@ -300,7 +336,12 @@ class BaseTransport:
         sent_count = 0
 
         try:
-            use_swnd = wait_ack and self._profile.swnd_max > 1 and total_frames > 4
+            use_swnd = (
+                wait_ack
+                and self._profile.swnd_max > 1
+                and self.allow_experimental_profiles
+                and total_frames > 4
+            )
             if not use_swnd:
                 for idx, frame in enumerate(frames):
                     if self._cancel_event.is_set():
@@ -393,6 +434,7 @@ class BleTransport(BaseTransport):
         self._pending_acks: Dict[int, asyncio.Future[Dict[str, Any]]] = {}
         self._write_lock = asyncio.Lock()
         self._unsolicited_cb: Optional[Callable[[Dict[str, Any]], None]] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     @property
     def effective_chunk_size(self) -> int:
@@ -442,18 +484,42 @@ class BleTransport(BaseTransport):
             elif self._unsolicited_cb:
                 self._unsolicited_cb(decoded)
 
+    def _on_disconnected(self, _client: Any) -> None:
+        """Bleak callback: fail pending ACK waits immediately instead of waiting for timeouts."""
+        logger.warning("BLE link to %s dropped", self._last_address)
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._fail_pending_acks)
+
+    def _fail_pending_acks(self) -> None:
+        for fut in list(self._pending_acks.values()):
+            if not fut.done():
+                fut.set_exception(ConnectionError("BLE link dropped"))
+        self._pending_acks.clear()
+
     async def connect(self, address: str) -> None:
         from bleak import BleakClient
 
         self._parser.reset()
         self._pending_acks.clear()
         self._last_address = address
-        self._client = BleakClient(address)
-        await self._client.connect()
-        self.negotiated_mtu = getattr(self._client, "mtu_size", None)
-        await asyncio.sleep(1.0)
-        await self._client.start_notify(BLE_NOTIFY_CHAR_UUID, self._on_notify)
-        await asyncio.sleep(0.25)
+        self._loop = asyncio.get_running_loop()
+        self._client = BleakClient(address, disconnected_callback=self._on_disconnected)
+        try:
+            await self._client.connect()
+            self.negotiated_mtu = getattr(self._client, "mtu_size", None)
+            await asyncio.sleep(1.0)
+            await self._client.start_notify(BLE_NOTIFY_CHAR_UUID, self._on_notify)
+            await asyncio.sleep(0.25)
+        except BaseException as exc:
+            # Never leave a half-open link behind (CLAUDE.md constraint 5)
+            try:
+                await self.disconnect()
+            except Exception:
+                logger.exception("Cleanup disconnect after failed connect also failed")
+            if type(exc).__name__ == "BleakDeviceNotFoundError":
+                raise DisplayNotAdvertising(address) from exc
+            raise
         logger.info("Connected to %s (MTU=%s) and enabled FFF1 notifications", address, self.negotiated_mtu)
 
     async def reconnect(self) -> None:
@@ -464,11 +530,19 @@ class BleTransport(BaseTransport):
         await self.connect(self._last_address)
 
     async def disconnect(self) -> None:
-        if self._client is not None:
+        """Graceful disconnect. Each step is isolated so a failed stop_notify never skips disconnect()."""
+        client = self._client
+        if client is not None:
             try:
-                if self._client.is_connected:
-                    await self._client.stop_notify(BLE_NOTIFY_CHAR_UUID)
-                    await self._client.disconnect()
+                if client.is_connected:
+                    try:
+                        await asyncio.wait_for(client.stop_notify(BLE_NOTIFY_CHAR_UUID), timeout=2.0)
+                    except Exception as exc:
+                        logger.warning("stop_notify failed during disconnect: %s", exc)
+                    try:
+                        await asyncio.wait_for(client.disconnect(), timeout=5.0)
+                    except Exception as exc:
+                        logger.warning("BLE disconnect failed: %s", exc)
             finally:
                 self._client = None
         for fut in self._pending_acks.values():
@@ -523,6 +597,9 @@ class MockTransport(BaseTransport):
     Validates incoming frames, maintains virtual state, and returns protocol-accurate
     ACK/GET response frames.
     """
+
+    # The simulator may exercise sliding-window code paths; real hardware may not.
+    allow_experimental_profiles = True
 
     def __init__(
         self,
