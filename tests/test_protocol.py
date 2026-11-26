@@ -295,3 +295,33 @@ def test_sliding_window_profiles_and_cancellation():
         await t.disconnect()
 
     asyncio.run(_run())
+
+
+def test_hardware_profiles_never_use_sliding_window():
+    """CLAUDE.md constraint 2: swnd > 1 wedges the panel's BLE RX buffer."""
+    from protocol import BLE_PROFILES, EXPERIMENTAL_PROFILES, BleTransport, recommend_profile
+    from protocol.transport import HIGH_SPEED_PREFIXES
+
+    assert all(p.swnd_max == 1 for p in BLE_PROFILES.values())
+    for name in ("YS64L", "EXYC-A", "", "XYZ"):
+        for ver in ("", "EXYC-A V1", *HIGH_SPEED_PREFIXES):
+            assert BLE_PROFILES[recommend_profile(name, ver)].swnd_max == 1
+    t = BleTransport()
+    for name in EXPERIMENTAL_PROFILES:
+        with pytest.raises(ValueError):
+            t.set_profile(name)
+    assert BleTransport(profile="balanced").profile.swnd_max == 1  # constructor falls back safely
+
+
+def test_ota_upgrade_frames_are_refused():
+    """CLAUDE.md constraint 6: cmd_type 4 (OTA) can brick the panel."""
+    with pytest.raises(ValueError):
+        build_frame(b"", sno=1, cmd_type=4)
+
+
+def test_format_flash_exact_wire_fixture():
+    """Byte-for-byte the frame the EXYC-A panel accepted on 2026-11-26 (SET, never OTA)."""
+    from protocol import cmd_format_flash
+    frame = cmd_format_flash(sno=2)
+    assert frame.hex(" ") == "aa 55 ff ff 09 00 02 00 c1 02 08 01 03 d7 03"
+    assert frame[9] == CMD_TYPE_SET

@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
 import json
+import logging
 import socket
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -32,7 +35,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from aiohttp import web
-from app.server import create_app, state
+from app.server import create_app, shutdown_ble, state
+
+# Long enough for an in-flight frame + graceful BLE disconnect (see shutdown_ble lock_timeout)
+SERVER_STOP_TIMEOUT_S = 12.0
+
+
+def _stop_server(stop_evt: threading.Event, thread: threading.Thread) -> None:
+    """Signal the server thread to disconnect BLE and stop, then wait for it. Idempotent."""
+    stop_evt.set()
+    if thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=SERVER_STOP_TIMEOUT_S)
 
 
 def _find_free_port(preferred: int = 18420) -> int:
@@ -52,7 +65,7 @@ def _run_server_thread(host: str, port: int, ready_evt: threading.Event, stop_ev
 
     async def runner() -> None:
         state.lan_enabled = host == "0.0.0.0"
-        state.port = port
+        state.bound_port = port  # used by the phone-pairing QR code
         app = create_app()
         app_runner = web.AppRunner(app)
         await app_runner.setup()
@@ -61,12 +74,9 @@ def _run_server_thread(host: str, port: int, ready_evt: threading.Event, stop_ev
         ready_evt.set()
         while not stop_evt.is_set():
             await asyncio.sleep(0.25)
-        # Clean BLE disconnect on app exit so hardware never stays stuck half-open
-        if state.transport and state.transport.is_connected:
-            try:
-                await state.transport.disconnect()
-            except Exception:
-                pass
+        # Clean BLE disconnect on app exit so hardware never stays stuck half-open.
+        # (app_runner.cleanup() also runs the on_shutdown hook; shutdown_ble is idempotent.)
+        await shutdown_ble("desktop app exit")
         await app_runner.cleanup()
 
     try:
@@ -80,6 +90,10 @@ _MACOS_STATUS_ITEM = None
 _MACOS_MENU_HANDLER = None
 
 
+# Set by the menu bar once it exists: shows action failures instead of swallowing them.
+_MENU_FEEDBACK = None
+
+
 def _post_local_async(base_url: str, endpoint: str, payload: dict) -> None:
     def _worker() -> None:
         try:
@@ -87,18 +101,42 @@ def _post_local_async(base_url: str, endpoint: str, payload: dict) -> None:
             req = urllib.request.Request(
                 f"{base_url}{endpoint}",
                 data=data,
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", "X-LOY-Source": "Menu Bar"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=12):
+            # GIF/clock uploads over BLE can take ~10-30 s
+            with urllib.request.urlopen(req, timeout=60):
                 pass
-        except Exception:
-            pass
+        except urllib.error.HTTPError as exc:
+            try:
+                msg = json.loads(exc.read().decode("utf-8")).get("error", str(exc))
+            except Exception:
+                msg = str(exc)
+            logging.getLogger("loy.menubar").warning("%s failed: %s", endpoint, msg)
+            if _MENU_FEEDBACK:
+                _MENU_FEEDBACK(f"⚠ {msg[:60]}")
+        except Exception as exc:
+            logging.getLogger("loy.menubar").warning("%s failed: %s", endpoint, exc)
+            if _MENU_FEEDBACK:
+                _MENU_FEEDBACK(f"⚠ {str(exc)[:60]}")
 
     threading.Thread(target=_worker, daemon=True).start()
 
 
-def _install_macos_menubar(base_url: str, win) -> None:
+def _status_line(base_url: str) -> str:
+    try:
+        with urllib.request.urlopen(f"{base_url}/api/status", timeout=3) as resp:
+            st = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return "○ LOY Studio server not responding"
+    if not st.get("connected"):
+        return "○ Display not connected"
+    title = (st.get("now_playing") or {}).get("title") or "Ready"
+    power = "" if st.get("power_on", True) else " · screen off"
+    return f"● {st.get('device_name') or 'Display'} · {title[:40]}{power} · ☀ {st.get('brightness', '?')}/15"
+
+
+def _install_macos_menubar(base_url: str, win, on_quit=None) -> None:
     """Attach a native macOS top Menu Bar icon (`▣ LOY`) directly inside LOY Studio.app."""
     if sys.platform != "darwin":
         return
@@ -137,6 +175,31 @@ def _install_macos_menubar(base_url: str, win) -> None:
 
         menu = NSMenu.alloc().init()
         tag_counter = [100]
+
+        # Live status line (current mode + connection), refreshed every 5 s
+        status_mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Connecting…", None, "")
+        status_mi.setEnabled_(False)
+        menu.addItem_(status_mi)
+        menu.addItem_(NSMenuItem.separatorItem())
+        feedback_until = [0.0]
+
+        def show_feedback(text: str) -> None:
+            feedback_until[0] = time.monotonic() + 8.0
+            AppHelper.callAfter(status_mi.setTitle_, text)
+            AppHelper.callAfter(item.button().setTitle_, "▣ LOY ⚠")
+
+        global _MENU_FEEDBACK
+        _MENU_FEEDBACK = show_feedback
+
+        def _poll_status() -> None:
+            while True:
+                if time.monotonic() >= feedback_until[0]:
+                    line = _status_line(base_url)
+                    AppHelper.callAfter(status_mi.setTitle_, line)
+                    AppHelper.callAfter(item.button().setTitle_, "▣ LOY" if line.startswith("●") else "▣ LOY ○")
+                time.sleep(5.0)
+
+        threading.Thread(target=_poll_status, daemon=True).start()
 
         def add_action(target_menu, title: str, fn) -> None:
             t_id = tag_counter[0]
@@ -203,19 +266,59 @@ def _install_macos_menubar(base_url: str, win) -> None:
         # Brightness submenu
         bri_menu = add_submenu(menu, "☀️ Brightness")
         for b_lbl, b_val in [("Night (2)", 2), ("Low (5)", 5), ("Medium (9)", 9), ("High (12)", 12), ("Max (15)", 15)]:
-            add_action(bri_menu, b_lbl, lambda v=b_val: _post_local_async(base_url, "/api/control", {"action": "brightness", "value": v}))
+            add_action(bri_menu, b_lbl, lambda v=b_val: _post_local_async(base_url, "/api/control", {"action": "brightness", "level": v}))
 
         add_action(menu, "⏻ Screen On", lambda: _post_local_async(base_url, "/api/control", {"action": "power", "on": True}))
         add_action(menu, "⏻ Screen Off", lambda: _post_local_async(base_url, "/api/control", {"action": "power", "on": False}))
         menu.addItem_(NSMenuItem.separatorItem())
-        add_action(menu, "Quit LOY Studio", lambda: NSApplication.sharedApplication().terminate_(None))
+        def quit_app() -> None:
+            # NSApp.terminate_ calls exit() without returning to our code, so disconnect BLE
+            # first (off the main thread so the UI doesn't freeze), then terminate.
+            def _worker() -> None:
+                if on_quit:
+                    on_quit()
+                AppHelper.callAfter(lambda: NSApplication.sharedApplication().terminate_(None))
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        add_action(menu, "Quit LOY Studio", quit_app)
 
         item.setMenu_(menu)
 
     AppHelper.callAfter(_build_on_main)
 
 
+def _self_test() -> int:
+    """CI smoke test for the frozen bundle: imports, routes, bundled assets, writable data dir.
+    Never touches BLE, the network, or the GUI."""
+    from app import server as srv
+
+    problems = []
+    try:
+        app = srv.create_app()
+        routes = {r.resource.canonical for r in app.router.routes() if r.resource is not None}
+        for must in ("/api/status", "/api/connect", "/api/update/apply", "/ws"):
+            if must not in routes:
+                problems.append(f"missing route {must}")
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"create_app failed: {exc!r}")
+    if not (srv.STATIC_DIR / "index.html").is_file():
+        problems.append(f"index.html not bundled at {srv.STATIC_DIR}")
+    if not any(srv.GIFS_DIR.glob("*.gif")):
+        problems.append(f"GIF pack not bundled at {srv.GIFS_DIR}")
+    try:
+        probe = srv.DATA_DIR / ".self_test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        problems.append(f"data dir not writable: {exc}")
+    print(json.dumps({"ok": not problems, "version": srv.APP_VERSION, "data_dir": str(srv.DATA_DIR), "problems": problems}))
+    return 0 if not problems else 1
+
+
 def main() -> None:
+    if "--self-test" in sys.argv:
+        sys.exit(_self_test())
     parser = argparse.ArgumentParser(description="LOY Studio Portable Desktop App")
     parser.add_argument("--port", type=int, default=18420)
     parser.add_argument("--no-lan", action="store_true", help="Bind to 127.0.0.1 only")
@@ -223,14 +326,20 @@ def main() -> None:
     args = parser.parse_args()
 
     port = _find_free_port(args.port)
+    # Phones can reach the app on Wi-Fi, but LAN access stays LOCKED until the owner sets a
+    # Wi-Fi password on this Mac (no default password). --no-lan binds to this Mac only.
     host = "127.0.0.1" if args.no_lan else "0.0.0.0"
     url = f"http://127.0.0.1:{port}"
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     ready_evt = threading.Event()
     stop_evt = threading.Event()
     t = threading.Thread(target=_run_server_thread, args=(host, port, ready_evt, stop_evt), daemon=True)
     t.start()
     ready_evt.wait(timeout=10.0)
+    stop_server = lambda: _stop_server(stop_evt, t)  # noqa: E731
+    # Last line of defence: any normal interpreter exit still disconnects BLE gracefully
+    atexit.register(stop_server)
 
     if not args.browser:
         try:
@@ -244,9 +353,8 @@ def main() -> None:
                 min_size=(400, 640),
                 background_color="#08090d",
             )
-            webview.start(func=lambda: _install_macos_menubar(url, win))
-            stop_evt.set()
-            t.join(timeout=3.0)
+            webview.start(func=lambda: _install_macos_menubar(url, win, on_quit=stop_server))
+            stop_server()
             return
         except Exception:
             pass
@@ -257,8 +365,7 @@ def main() -> None:
         while t.is_alive():
             time.sleep(0.5)
     except KeyboardInterrupt:
-        stop_evt.set()
-        t.join(timeout=3.0)
+        stop_server()
 
 
 if __name__ == "__main__":

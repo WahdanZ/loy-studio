@@ -68,6 +68,7 @@ from .commands import (
     cmd_set_global_ani,
     cmd_set_ble_password,
     cmd_delete_all,
+    cmd_format_flash,
     cmd_delete_programs,
     cmd_dispatch_program,
     cmd_pgm_play,
@@ -87,7 +88,9 @@ from .image_codec import (
 )
 from .decoder import decode_response, DeviceInfo, DeviceParams
 from .transport import (
+    ALL_PROFILES,
     BLE_PROFILES,
+    EXPERIMENTAL_PROFILES,
     BleProfile,
     BleTransport,
     DiscoveredDisplay,
@@ -154,6 +157,7 @@ __all__ = [
     "cmd_set_global_ani",
     "cmd_set_ble_password",
     "cmd_delete_all",
+    "cmd_format_flash",
     "cmd_delete_programs",
     "cmd_dispatch_program",
     "cmd_pgm_play",
@@ -170,7 +174,9 @@ __all__ = [
     "decode_response",
     "DeviceInfo",
     "DeviceParams",
+    "ALL_PROFILES",
     "BLE_PROFILES",
+    "EXPERIMENTAL_PROFILES",
     "BleProfile",
     "BleTransport",
     "DiscoveredDisplay",

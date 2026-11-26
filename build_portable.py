@@ -38,6 +38,11 @@ cmd = [
     "certifi",
     "--collect-data",
     "certifi",
+    # Our own packages: collect every submodule so lazily-imported modules are never missing
+    "--collect-submodules",
+    "app",
+    "--collect-submodules",
+    "protocol",
 ]
 
 if sys.platform == "win32":

@@ -42,7 +42,7 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 
 - **Mobile-First v3.0 OLED UI/UX**:
   - Floating 5-tab iOS-style glass dock on phones (`Home`, `Explore`, center `Create` FAB, `Schedule`, `Smart`) and full sidebar workspace on desktop.
-  - Password-protected local Wi-Fi access (`--lan`) with QR code pairing — loopback (`127.0.0.1`) auto-trusted on Mac, phones unlock once with your password.
+  - Password-protected local Wi-Fi access (`--lan`) with QR code pairing — loopback (`127.0.0.1`) auto-trusted on Mac. Phone access stays **locked until you set a Wi-Fi password** (6+ characters) on the Mac; each phone gets its own session you can sign out from Device → Phone Access.
 - **Multi-Touch & Fullscreen Drawing Studio**:
   - Responsive `64×64` LED simulator canvas with **Full Draw** edge-to-edge fullscreen mode and an inline quick color strip.
   - **Multi-touch support**: draw with multiple fingers simultaneously, **2-finger pinch-to-resize & pan** on floating text/emojis, and **Procreate-style 2-finger tap to Undo**.
@@ -69,7 +69,7 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 
 | Layer | Technology |
 | :--- | :--- |
-| **Backend Gateway** | Python 3.12, **FastAPI**, **Uvicorn**, WebSockets |
+| **Backend Gateway** | Python 3.12, **aiohttp** (HTTP + WebSockets) |
 | **Bluetooth LE Transport** | **Bleak** (macOS CoreBluetooth) with reliable ACK-paced streaming & auto-reconnect |
 | **Graphics & Media Engine** | **Pillow (PIL)** for `64×64` rendering, clock compositing, quantization & GIF encoding; optional **FFmpeg** for video import |
 | **Frontend UI / PWA** | Vanilla **HTML5 / CSS3 / JavaScript** (zero build step), Canvas 2D LED simulator, Service Worker PWA |
@@ -77,7 +77,7 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 | **Smart Home Bridge** | **Matter** (`@matter/main` + Node.js) for native local Google Home / Nest Hub control |
 | **CI/CD Releases** | **GitHub Actions** automated testing & portable builds for macOS & Windows |
 | **macOS Integration** | **rumps** Menu Bar app + `launchd` service (`macos/loy_ctl.sh`) |
-| **Testing** | **pytest** automated protocol & framing test suite |
+| **Testing** | **pytest** protocol, server (MockTransport + aiohttp TestClient), auth & updater-signing suites |
 
 ---
 
@@ -110,7 +110,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # 2. Run unit tests
-pytest -q tests/test_protocol.py
+pytest -q tests/
 
 # 3. Start LOY Studio (localhost only, or add --lan for password-protected Wi-Fi phone access)
 python app/server.py --lan --port 18420
@@ -126,3 +126,22 @@ cd matter && npm install && cd ..
 # 6. Optional: trigger a temporary alert from any script
 ./macos/loy_ctl.sh notify "BUILD OK" "ALL PASS" success
 ```
+
+---
+
+## Security & Updates
+
+- **Phone / LAN access** is refused until you set a Wi-Fi password on the Mac. Wrong passwords are rate-limited, and changing the password signs every phone out. Password, session and updater endpoints only work from the Mac itself.
+- **Browser safety:** requests from other websites (cross-site / DNS-rebinding) are rejected, and the UI ships with a strict Content-Security-Policy.
+- **In-app updates** are verified before install: every release publishes `SHA256SUMS`, and the app refuses a zip that does not match. To also require a signature, run `python tools/sign_release.py keygen`, put the secret in the `LOY_UPDATE_SIGNING_KEY` GitHub Actions secret, and paste the public key into `app/update_signing.py`.
+
+## Display Program Slots
+
+| Slot | Use |
+| :--- | :--- |
+| 1 ↔ 2 | Live double-buffer (upload hidden slot, then switch: no flicker) |
+| 3 | Temporary alerts (RAM only) |
+| 4 – 8 | On-device Flash schedule (up to 5 programs, runs with the Mac offline) |
+| 9 | Throughput benchmark scratch (RAM only) |
+
+If a switch shows a new image for a moment and then jumps back, the panel's program list is out of order: use **Device → Display & BLE Settings → Repair Display** on the Mac. It runs the panel's own Format Flash, which erases the stored images, then send something new.

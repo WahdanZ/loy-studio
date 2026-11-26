@@ -32,6 +32,15 @@
 
   const $ = (id) => document.getElementById(id);
 
+  // Escape untrusted text before it goes into innerHTML (BLE names, rule names, history, errors).
+  const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  function esc(v) { return String(v ?? "").replace(/[&<>"']/g, (c) => ESC_MAP[c]); }
+  // Only allow http(s)/relative/data:image URLs in src attributes.
+  function safeUrl(u) {
+    const s = String(u ?? "");
+    return /^(https?:\/\/|\/|data:image\/)/i.test(s) ? esc(s) : "";
+  }
+
   function toast(msg) {
     const el = $("toast");
     el.textContent = msg;
@@ -101,7 +110,7 @@
   function recordSent(label) {
     recentSent.unshift(`${new Date().toLocaleTimeString()} — ${label}`);
     recentSent = recentSent.slice(0, 8);
-    $("homeRecent").innerHTML = recentSent.map((s) => `<div style="padding:4px 0;border-bottom:1px solid var(--border);">${s}</div>`).join("");
+    $("homeRecent").innerHTML = recentSent.map((s) => `<div style="padding:4px 0;border-bottom:1px solid var(--border);">${esc(s)}</div>`).join("");
   }
 
   // ---------------- Navigation ----------------
@@ -961,13 +970,16 @@
       }
     };
   }
+  let animBriTimer = null;
   if ($("animBriSlider")) {
     $("animBriSlider").oninput = (e) => {
       const v = Number(e.target.value);
       if ($("animBriVal")) $("animBriVal").textContent = `${v} / 15`;
       if ($("homeBriSlider")) $("homeBriSlider").value = v;
       if ($("homeBriVal")) $("homeBriVal").textContent = v;
-      sendCtrl({ action: "brightness", value: v });
+      // Debounce: one BLE command after the drag settles, not one per slider tick
+      clearTimeout(animBriTimer);
+      animBriTimer = setTimeout(() => sendCtrl({ action: "brightness", level: v }), 180);
     };
   }
 
@@ -1329,7 +1341,7 @@
     }
     if (Array.isArray(st.recent_sent) && st.recent_sent.length && $("homeRecent")) {
       $("homeRecent").innerHTML = st.recent_sent
-        .map((r) => `<div style="padding:4px 0;border-bottom:1px solid var(--border);">${r.time} — <b>${r.title}</b> <span class="muted">(${r.source})</span></div>`)
+        .map((r) => `<div style="padding:4px 0;border-bottom:1px solid var(--border);">${esc(r.time)} — <b>${esc(r.title)}</b> <span class="muted">(${esc(r.source)})</span></div>`)
         .join("");
     }
     const ss = st.schedule_summary;
@@ -1358,7 +1370,7 @@
       devices.forEach((d) => {
         const row = document.createElement("div");
         row.className = "row";
-        row.innerHTML = `<div><strong>${d.name}</strong> <span class="muted">${d.rssi} dBm</span></div>`;
+        row.innerHTML = `<div><strong>${esc(d.name)}</strong> <span class="muted">${esc(d.rssi)} dBm</span></div>`;
         const b = document.createElement("button");
         b.className = "btn sm primary"; b.textContent = "Connect";
         b.onclick = async () => {
@@ -1369,7 +1381,7 @@
         };
         row.appendChild(b); list.appendChild(row);
       });
-    } catch (err) { list.innerHTML = `<p class="muted">${err.message}</p>`; }
+    } catch (err) { list.innerHTML = `<p class="muted">${esc(err.message)}</p>`; }
   }
 
   async function connectMock() {
@@ -1410,6 +1422,20 @@
       $("benchResult").textContent = `${r.measured_bps} B/s (${r.elapsed_s}s, ${r.frames} frames, ${r.hardware_measured ? "BLE" : "Mock"})`;
     } catch (err) { $("benchResult").textContent = err.message; }
   };
+  if ($("btnRepairDisplay")) $("btnRepairDisplay").onclick = async () => {
+    const ok = confirm(
+      "Repair Display?\n\nThis runs the panel's own Format Flash. It fixes switches that show for a moment and then jump back.\n\n" +
+      "It erases every image, GIF and clock stored on the panel. The panel may show its startup logo until you send something new."
+    );
+    if (!ok) return;
+    const btn = $("btnRepairDisplay");
+    btn.disabled = true;
+    try {
+      await api("/api/display/repair", { method: "POST", body: "{}" });
+      toast("Display repaired. Send something to show");
+    } catch (err) { toast(err.message); }
+    finally { btn.disabled = false; }
+  };
   $("btnBriSchedule").onclick = () =>
     sendCtrl({
       action: "brightness_schedule",
@@ -1447,7 +1473,7 @@
     gifs.forEach((g) => {
       const v = `gif:${g}`;
       const label = g.replace(/^\d+_/, "").replace(/\.gif$/i, "").replace(/_/g, " ");
-      opts.push(`<option value="${v}" ${v === curVal ? "selected" : ""}>GIF · ${label}</option>`);
+      opts.push(`<option value="${esc(v)}" ${v === curVal ? "selected" : ""}>GIF · ${esc(label)}</option>`);
     });
     opts.push(`</optgroup><optgroup label="Live Hardware Clocks (RTC)">`);
     [
@@ -1524,7 +1550,7 @@
           const item = document.createElement("span");
           item.className = "inline";
           item.style.gap = "5px";
-          item.innerHTML = `<span style="width:10px;height:10px;border-radius:3px;background:${col};display:inline-block;"></span>${r.name} <span class="muted">(${r.start}–${r.end})</span>`;
+          item.innerHTML = `<span style="width:10px;height:10px;border-radius:3px;background:${col};display:inline-block;"></span>${esc(r.name)} <span class="muted">(${esc(r.start)}–${esc(r.end)})</span>`;
           legend.appendChild(item);
         }
       });
@@ -1568,9 +1594,9 @@
       card.className = `sched-card${isLive ? " live" : ""}${rule.enabled ? "" : " disabled"}`;
 
       const thumbHtml = rule.kind === "gif" && rule.target
-        ? `<img src="/gifs/${rule.target}" alt="" style="width:44px;height:44px;border-radius:9px;image-rendering:pixelated;border:1px solid var(--border);background:#000;flex-shrink:0;" />`
+        ? `<img src="/gifs/${encodeURIComponent(rule.target)}" alt="" style="width:44px;height:44px;border-radius:9px;image-rendering:pixelated;border:1px solid var(--border);background:#000;flex-shrink:0;" />`
         : rule.kind === "hw_clock" && rule.target
-          ? `<img src="/api/hw_clock_preview/${rule.target}" alt="" style="width:44px;height:44px;border-radius:9px;image-rendering:pixelated;border:1px solid var(--border);background:#000;flex-shrink:0;" />`
+          ? `<img src="/api/hw_clock_preview/${encodeURIComponent(rule.target)}" alt="" style="width:44px;height:44px;border-radius:9px;image-rendering:pixelated;border:1px solid var(--border);background:#000;flex-shrink:0;" />`
           : `<div style="width:44px;height:44px;border-radius:9px;border:1px solid var(--border);background:#000;display:grid;place-items:center;color:var(--danger);flex-shrink:0;"><svg class="ico"><use href="#i-power"/></svg></div>`;
 
       const dayChipsHtml = SCHED_DAYS.map(([dk, lbl]) => {
@@ -1583,7 +1609,7 @@
           <div class="inline" style="gap:10px;flex:1;min-width:0;flex-wrap:nowrap;">
             ${thumbHtml}
             <div style="flex:1;min-width:0;">
-              <input type="text" data-field="name" value="${(rule.name || "").replace(/"/g, "&quot;")}" style="width:100%;font-weight:700;padding:6px 9px;" />
+              <input type="text" data-field="name" value="${esc(rule.name || "")}" style="width:100%;font-weight:700;padding:6px 9px;" />
             </div>
           </div>
           <input type="checkbox" data-field="enabled" ${rule.enabled ? "checked" : ""} title="Enable / disable rule" />
@@ -1591,14 +1617,14 @@
         <div class="sched-days-grid">${dayChipsHtml}</div>
         <div class="sched-controls-grid">
           <div class="inline" style="gap:5px;flex-wrap:nowrap;">
-            <input type="time" data-field="start" value="${rule.start || "09:00"}" style="flex:1;" />
+            <input type="time" data-field="start" value="${esc(rule.start || "09:00")}" style="flex:1;" />
             <span class="muted">→</span>
-            <input type="time" data-field="end" value="${rule.end || "17:00"}" style="flex:1;" />
+            <input type="time" data-field="end" value="${esc(rule.end || "17:00")}" style="flex:1;" />
           </div>
           <select data-field="target" style="width:100%;">${buildTargetOptions(rule.kind, rule.target)}</select>
           <label class="inline muted" style="gap:5px;justify-content:flex-end;" title="Brightness (1-15)">
             <svg class="ico sm"><use href="#i-sun"/></svg>
-            <input type="number" data-field="brightness" min="1" max="15" value="${rule.brightness ?? 12}" style="width:54px;" />
+            <input type="number" data-field="brightness" min="1" max="15" value="${esc(rule.brightness ?? 12)}" style="width:54px;" />
           </label>
         </div>
         <div class="sched-footer">
@@ -1925,7 +1951,7 @@
       gifs.forEach((g) => {
         const tile = document.createElement("div");
         tile.className = "art-tile";
-        tile.innerHTML = `<img src="${g.url}" /><div class="art-tile-name">${g.file.replace(/^\d+_/, "").replace(".gif", "")}</div>`;
+        tile.innerHTML = `<img src="${safeUrl(g.url)}" /><div class="art-tile-name">${esc(g.file.replace(/^\d+_/, "").replace(".gif", ""))}</div>`;
         const b = document.createElement("button");
         b.className = "btn sm primary full"; b.textContent = "Send";
         b.onclick = async () => {
@@ -1949,7 +1975,7 @@
       results.forEach((g, idx) => {
         const tile = document.createElement("div");
         tile.className = "art-tile";
-        tile.innerHTML = `<img src="${g.preview}" />`;
+        tile.innerHTML = `<img src="${safeUrl(g.preview)}" />`;
         const b = document.createElement("button");
         b.className = "btn sm primary full"; b.textContent = "Select & Send";
         b.onclick = async () => {
@@ -1962,7 +1988,7 @@
         };
         tile.appendChild(b); grid.appendChild(tile);
       });
-    } catch (err) { grid.innerHTML = `<p class="muted">${err.message}</p>`; }
+    } catch (err) { grid.innerHTML = `<p class="muted">${esc(err.message)}</p>`; }
   };
 
   // ---------------- Library ----------------
@@ -2263,7 +2289,7 @@
       const d = await api("/api/diagnostics");
       $("diagSummary").textContent = `Profile: ${d.profile} · MTU: ${d.negotiated_mtu ?? "—"} · RSSI: ${d.last_rssi ?? "—"} · Measured: ${d.last_measured_bps ?? "—"} B/s`;
       const log = $("packetLog");
-      log.innerHTML = d.recent_packets.map((p) => `<div class="pkt-row ${p.dir}"><strong>${p.dir}</strong> (${p.len}B) ${p.hex.slice(0, 140)}</div>`).join("");
+      log.innerHTML = d.recent_packets.map((p) => `<div class="pkt-row ${esc(p.dir)}"><strong>${esc(p.dir)}</strong> (${esc(p.len)}B) ${esc(String(p.hex).slice(0, 140))}</div>`).join("");
     } catch (_) {}
   }
   $("btnRefreshPkts").onclick = refreshDiagnostics;
@@ -2285,7 +2311,7 @@
     if ($("clientCount")) $("clientCount").textContent = clients.length;
     if ($("connectedClientsList")) {
       $("connectedClientsList").innerHTML = clients.length
-        ? clients.map((c) => `<div><strong>${c.kind}</strong> · ${c.ip} <span class="muted">(since ${c.connected_at})</span></div>`).join("")
+        ? clients.map((c) => `<div><strong>${esc(c.kind)}</strong> · ${esc(c.ip)} <span class="muted">(since ${esc(c.connected_at)})</span></div>`).join("")
         : "No active browser clients.";
     }
   }
@@ -2301,12 +2327,43 @@
         ? `Scan this QR code with your iPhone or Android camera on the same Wi-Fi — no URL token needed.`
         : `Currently bound to 127.0.0.1 only. Restart with <code>python app/server.py --lan</code> to enable phone access.`;
       if ($("lanPwdHint")) {
-        $("lanPwdHint").textContent = data.password_enabled
-          ? (data.is_default_password ? "Current Wi-Fi password is the default (1234). Set your own password above." : "Wi-Fi password protection is active.")
-          : "Wi-Fi password is disabled (anyone on your local Wi-Fi can connect).";
+        $("lanPwdHint").textContent = data.password_set
+          ? "Wi-Fi password protection is active. Changing it signs every phone out."
+          : "Phone access is locked until you set a Wi-Fi password (6+ characters) above.";
       }
       renderClientsList(data.clients || []);
+      loadLanSessions();
     } catch (_) {}
+  }
+
+  async function loadLanSessions() {
+    const box = $("lanSessionsBox");
+    const list = $("lanSessionsList");
+    if (!box || !list) return;
+    try {
+      const { sessions } = await api("/api/auth/sessions"); // Mac-only endpoint (403 on phones)
+      box.classList.remove("hidden");
+      $("lanSessionCount").textContent = String(sessions.length);
+      list.replaceChildren();
+      if (!sessions.length) { list.textContent = "No phones signed in."; return; }
+      sessions.forEach((s) => {
+        const row = document.createElement("div");
+        row.className = "inline";
+        row.style.justifyContent = "space-between";
+        const label = document.createElement("span");
+        const seen = new Date((s.last_seen || 0) * 1000).toLocaleString();
+        label.textContent = `${s.ip} · ${(s.ua || "").slice(0, 40)} · last seen ${seen}`;
+        const btn = document.createElement("button");
+        btn.className = "btn sm";
+        btn.textContent = "Sign out";
+        btn.onclick = async () => {
+          try { await api("/api/auth/sessions", { method: "POST", body: JSON.stringify({ id: s.id }) }); loadLanSessions(); toast("Phone signed out"); }
+          catch (err) { toast(err.message); }
+        };
+        row.append(label, btn);
+        list.appendChild(row);
+      });
+    } catch (_) { box.classList.add("hidden"); }
   }
   $("btnCopyPhoneUrl").onclick = () => {
     navigator.clipboard?.writeText($("phoneUrlBox").value);
@@ -2316,9 +2373,8 @@
     try {
       const pwd = $("lanPwdInput").value.trim();
       const res = await api("/api/auth/set_password", { method: "POST", body: JSON.stringify({ password: pwd }) });
-      if (res.token) setLanToken(res.token);
       $("lanPwdInput").value = "";
-      toast(res.password_enabled ? "Wi-Fi password updated!" : "Wi-Fi password disabled");
+      toast(res.password_enabled ? "Wi-Fi password updated: phones must sign in again" : "Phone access locked");
       loadPhoneConnect();
     } catch (err) { toast(err.message); }
   };
@@ -2537,7 +2593,7 @@
       hideAuthModal();
       initAuthenticatedData();
     } else {
-      showAuthModal("");
+      showAuthModal(st.setup_required ? "Phone access is locked. Set a Wi-Fi password on your Mac first (Device → Phone Access)." : "");
     }
   }).catch(() => initAuthenticatedData());
 })();
