@@ -207,7 +207,7 @@ DEVICE_SCHEDULE_DISABLED_MSG = (
     "On-device schedules are turned off: on this display firmware they show the startup logo and "
     "disturb normal switching. Use the Mac schedule instead (it runs while LOY Studio is open)."
 )
-APP_VERSION = "4.4.4"
+APP_VERSION = "4.4.5"
 GITHUB_REPO = "WahdanZ/loy-studio"
 
 
@@ -1267,13 +1267,41 @@ async def handle_control(req: web.Request) -> web.Response:
             elif action == "stopwatch":
                 res = await t.send_frame(cmd_set_stopwatch(fmt=int(body.get("fmt", 0)), sno=t.next_sno()))
             elif action == "game_launch":
-                res = await t.send_frame(cmd_game_launch(int(body["game_id"]), sno=t.next_sno()))
+                # Blank the background using RAM Slot 3 so the built-in game never renders
+                # on top of a running clock/GIF; Exit Game (or any new upload) restores the live slot.
+                _cancel_alert_restore()
+                await _exit_modal_mode()
+                await t.send_frame(cmd_delete_programs([ALERT_SLOT], sno=t.next_sno()))
+                black_ystp = pil_image_to_ystp01(
+                    Image.new("RGB", (state.width, state.height), (0, 0, 0)),
+                    state.width,
+                    state.height,
+                )
+                blank_frames = build_image_program_frames(
+                    black_ystp,
+                    state.width,
+                    state.height,
+                    program_id=ALERT_SLOT,
+                    start_sno=t.next_sno(),
+                    show_now=False,
+                    data_save=1,
+                )
+                _reserve_snos(t, blank_frames)
+                await t.send_frames(blank_frames, label="Clear screen for game")
+                await t.send_frame(cmd_dispatch_program(ALERT_SLOT, sno=t.next_sno()))
+                await t.send_frame(cmd_pgm_play(model=1, index=(ALERT_SLOT - 1) & 0xFF, sno=t.next_sno()))
+                state.temp_alert_active = True
+                gid = int(body["game_id"])
+                res = await t.send_frame(cmd_game_launch(gid, sno=t.next_sno()))
                 state.in_modal_mode = True
                 state.save_display_state()
+                gnames = {0: "Snake", 1: "Blocks", 2: "Breakout", 3: "Arcade"}
+                state.set_now_playing("game", f"Game · {gnames.get(gid, f'#{gid}')}", subtitle="Hardware Arcade", source=_detect_req_source(req))
             elif action == "game_opt":
                 res = await t.send_frame(cmd_game_action(body["opt"], sno=t.next_sno(), unack=False))
                 if body["opt"] == "exit":
                     state.in_modal_mode = False
+                    await _end_temp_alert(restore_previous=True)
             elif action == "music_spectrum":
                 use_mic = bool(body.get("use_device_mic", True))
                 bars = body.get("bars")

@@ -590,3 +590,19 @@ def test_lan_ip_picker_ignores_vpn_tunnels():
     assert picked == "192.168.1.42"
     # Still works if physical Wi-Fi itself is on a 10.0.0.x home router
     assert S._pick_best_lan_ip([("utun0", "10.10.0.5"), ("en0", "10.0.0.15")]) == "10.0.0.15"
+
+
+def test_game_launch_blanks_via_slot3_and_exit_restores_live_slot():
+    async def body(c):
+        panel = await _connect(c)
+        await c.post("/api/gif_pack/send", json={"file": "10_mode_coding.gif"})
+        live_before = S.state.active_slot
+        r = await c.post("/api/control", json={"action": "game_launch", "game_id": 0})
+        assert r.status == 200, await r.text()
+        assert panel.visible == S.ALERT_SLOT and S.state.in_modal_mode and S.state.temp_alert_active
+        assert panel.writes[-1]["prog"] == S.ALERT_SLOT and panel.writes[-1]["ram"] is True
+        r2 = await c.post("/api/control", json={"action": "game_opt", "opt": "exit"})
+        assert r2.status == 200
+        assert panel.visible == live_before and not S.state.in_modal_mode and not S.state.temp_alert_active
+        assert panel.violations == []
+    run(body)
