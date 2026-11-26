@@ -47,8 +47,14 @@ cmd = [
 
 if sys.platform == "win32":
     cmd.append("--onefile")
+    ico = ROOT / "assets" / "app_icon.ico"
+    if ico.is_file():
+        cmd += ["--icon", str(ico)]
     cmd += ["--hidden-import", "bleak.backends.winrt"]
 elif sys.platform == "darwin":
+    icns = ROOT / "assets" / "app_icon.icns"
+    if icns.is_file():
+        cmd += ["--icon", str(icns)]
     cmd += [
         "--hidden-import", "bleak.backends.corebluetooth",
         "--hidden-import", "EventKit",
