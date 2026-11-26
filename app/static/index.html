@@ -219,7 +219,7 @@
         <!-- Clean 3-Way Segmented Switcher (Merges Clocks, GIFs & Library cleanly on Mobile & Desktop!) -->
         <div class="seg-bar">
           <button class="seg-btn active" data-exp="expClocks">Live Clocks (15)</button>
-          <button class="seg-btn" data-exp="expGifs">18 GIFs &amp; Games</button>
+          <button id="expGifsTabBtn" class="seg-btn" data-exp="expGifs">GIFs &amp; Games</button>
           <button class="seg-btn" data-exp="expLibrary">My Library</button>
         </div>
 
@@ -283,10 +283,14 @@
           </div>
         </div>
 
-        <!-- Pane 2: 18 Built-in GIFs, Online Search & Hardware Games -->
+        <!-- Pane 2: Built-in GIFs, Online Search & Hardware Games -->
         <div id="expGifs" class="exp-pane">
           <div class="card" style="margin-bottom:14px;">
-            <div class="card-header"><h2><svg class="ico"><use href="#i-sparkles"/></svg> 64×64 Work Modes &amp; Pixel Art</h2><span class="badge green">18 Offline GIFs</span></div>
+            <div class="card-header"><h2><svg class="ico"><use href="#i-sparkles"/></svg> 64×64 Work Modes &amp; Pixel Art</h2><span id="expGifsCountBadge" class="badge green">Offline GIFs</span></div>
+            <div class="gif-filter-bar">
+              <div id="gifCatChips" class="gif-cat-chips"></div>
+              <input id="gifFilterSearch" type="text" placeholder="Search modes, scenes, seasonal…" />
+            </div>
             <div id="exploreGifGrid" class="grid-auto"></div>
           </div>
 

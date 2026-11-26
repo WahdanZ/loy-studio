@@ -2013,26 +2013,76 @@
   $("btnGameLaunch").onclick = () => sendCtrl({ action: "game_launch", game_id: Number($("selGameId").value) }, "Game launched");
   document.querySelectorAll(".game-opt").forEach((b) => (b.onclick = () => sendCtrl({ action: "game_opt", opt: b.dataset.opt })));
 
-  async function loadExploreGifs() {
+  let exploreGifsData = [];
+  let exploreGifCategories = [];
+  let activeGifCat = "all";
+
+  function renderGifCatChips() {
+    const bar = $("gifCatChips");
+    if (!bar) return;
+    bar.innerHTML = "";
+    const cats = [{ id: "all", label: "All" }, ...exploreGifCategories, { id: "mine", label: "Mine" }];
+    cats.forEach((c) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `pill${activeGifCat === c.id ? " active" : ""}`;
+      btn.textContent = c.label;
+      btn.onclick = () => {
+        activeGifCat = c.id;
+        renderGifCatChips();
+        renderExploreGifs();
+      };
+      bar.appendChild(btn);
+    });
+  }
+
+  function renderExploreGifs() {
     const grid = $("exploreGifGrid");
-    try {
-      const { gifs } = await api("/api/gif_pack");
-      grid.innerHTML = "";
-      gifs.forEach((g) => {
-        const label = g.label || g.file;
-        const tile = document.createElement("div");
-        tile.className = "art-tile";
-        tile.innerHTML = `<img src="${safeUrl(g.url)}" alt="${esc(label)}" /><div class="art-tile-name">${esc(g.emoji ? `${g.emoji} ${label}` : label)}</div>`;
-        const b = document.createElement("button");
-        b.className = "btn sm primary full"; b.textContent = "Send";
-        b.onclick = () => withTileProgress(tile, async () => {
-          try {
-            const res = await api("/api/gif_pack/send", { method: "POST", body: JSON.stringify({ file: g.file }) });
-            recordSent(label); toast(`Sent ${label} (${res.wire_frames} frames)`);
-          } catch (err) { toast(err.message); }
-        });
-        tile.appendChild(b); grid.appendChild(tile);
+    if (!grid) return;
+    const q = ($("gifFilterSearch")?.value || "").trim().toLowerCase();
+    const list = exploreGifsData.filter((g) => {
+      if (activeGifCat !== "all" && g.category !== activeGifCat) return false;
+      if (q) {
+        const hay = `${g.label || ""} ${g.blurb || ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    grid.innerHTML = "";
+    if (!list.length) {
+      grid.innerHTML = '<p class="muted" style="grid-column:1/-1;text-align:center;padding:14px 0;">No GIFs match this filter.</p>';
+      return;
+    }
+    list.forEach((g) => {
+      const label = g.label || "Untitled";
+      const tile = document.createElement("div");
+      tile.className = "art-tile";
+      const blurbHtml = g.blurb ? `<div class="art-tile-blurb">${esc(g.blurb)}</div>` : "";
+      tile.innerHTML = `<img src="${safeUrl(g.url)}" alt="${esc(label)}" /><div class="art-tile-name">${esc(g.emoji ? `${g.emoji} ${label}` : label)}</div>${blurbHtml}`;
+      const b = document.createElement("button");
+      b.className = "btn sm primary full"; b.textContent = "Send";
+      b.onclick = () => withTileProgress(tile, async () => {
+        try {
+          const res = await api("/api/gif_pack/send", { method: "POST", body: JSON.stringify({ file: g.file }) });
+          recordSent(label); toast(`Sent ${label} (${res.wire_frames} frames)`);
+        } catch (err) { toast(err.message); }
       });
+      tile.appendChild(b); grid.appendChild(tile);
+    });
+  }
+
+  if ($("gifFilterSearch")) $("gifFilterSearch").oninput = renderExploreGifs;
+
+  async function loadExploreGifs() {
+    try {
+      const data = await api("/api/gif_pack");
+      exploreGifsData = Array.isArray(data.gifs) ? data.gifs : [];
+      exploreGifCategories = Array.isArray(data.categories) ? data.categories : [];
+      const count = exploreGifsData.length;
+      if ($("expGifsTabBtn")) $("expGifsTabBtn").textContent = `${count} GIFs & Games`;
+      if ($("expGifsCountBadge")) $("expGifsCountBadge").textContent = `${count} Offline GIFs`;
+      renderGifCatChips();
+      renderExploreGifs();
     } catch (_) {}
   }
 
@@ -2615,6 +2665,10 @@
     { label: "Coding", kind: "gif", target: "10_mode_coding.gif", img: "/gifs/10_mode_coding.gif" },
     { label: "ON AIR", kind: "gif", target: "11_mode_on_air_meeting.gif", img: "/gifs/11_mode_on_air_meeting.gif" },
     { label: "Coffee Break", kind: "gif", target: "13_mode_coffee_break.gif", img: "/gifs/13_mode_coffee_break.gif" },
+    { label: "Lunch", kind: "gif", target: "19_mode_lunch.gif", img: "/gifs/19_mode_lunch.gif" },
+    { label: "Ship It", kind: "gif", target: "27_mode_ship_it.gif", img: "/gifs/27_mode_ship_it.gif" },
+    { label: "Out of Office", kind: "gif", target: "25_mode_out_of_office.gif", img: "/gifs/25_mode_out_of_office.gif" },
+    { label: "Sleep", kind: "gif", target: "22_mode_sleep.gif", img: "/gifs/22_mode_sleep.gif" },
     { label: "Lo-Fi Vibe", kind: "gif", target: "16_mode_music_vibe.gif", img: "/gifs/16_mode_music_vibe.gif" },
     { label: "Gaming", kind: "gif", target: "15_mode_gaming_chill.gif", img: "/gifs/15_mode_gaming_chill.gif" },
     { label: "Synthwave Clock", kind: "clock", target: "hw_synthwave_sun", img: "/api/hw_clock_preview/hw_synthwave_sun" },
@@ -2658,6 +2712,7 @@
   function initAuthenticatedData() {
     api("/api/status").then(applyStatus).catch(() => {});
     loadWorkSchedule();
+    loadExploreGifs();
     connectWebSocket();
   }
 
