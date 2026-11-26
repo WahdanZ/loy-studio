@@ -2383,21 +2383,40 @@
   let pomoRem = 1500, pomoTot = 1500;
   $("btnPomoStart").onclick = () => {
     clearInterval(pomoTimer);
-    pomoTot = (Number($("pomoMin").value) || 25) * 60;
+    const totalMin = Math.max(1, Math.min(90, Number($("pomoMin").value) || 25));
+    pomoTot = totalMin * 60;
     pomoRem = pomoTot;
+    // Start the panel's built-in live hardware countdown (ticks every second natively on MCU!)
+    if (connected) {
+      const hours = Math.floor(totalMin / 60);
+      const minutes = totalMin % 60;
+      sendCtrl({ action: "countdown", hours, minutes, seconds: 0 }, `Pomodoro ${totalMin}m started (live countdown)`);
+    } else {
+      toast(`Pomodoro ${totalMin}m started`);
+    }
     const tick = () => {
       const mm = String(Math.floor(pomoRem / 60)).padStart(2, "0"), ss = String(pomoRem % 60).padStart(2, "0");
       $("pomoReadout").textContent = `${mm}:${ss}`;
-      if (pomoRem % 15 === 0 || pomoRem === pomoTot) {
-        api("/api/widget_frame", { method: "POST", body: JSON.stringify({ kind: "pomodoro", remaining_s: pomoRem, total_s: pomoTot, send: connected }) }).catch(() => {});
+      if (pomoRem > 0) {
+        pomoRem--;
+      } else {
+        clearInterval(pomoTimer);
+        if (connected) {
+          api("/api/notify", { method: "POST", body: JSON.stringify({ title: "FOCUS DONE", subtitle: "TAKE A BREAK", style: "success", duration_s: 10 }) }).catch(() => {});
+        }
       }
-      if (pomoRem > 0) pomoRem--; else clearInterval(pomoTimer);
     };
     tick();
     pomoTimer = setInterval(tick, 1000);
-    toast("Pomodoro started (syncs to display every 15s)");
   };
-  $("btnPomoStop").onclick = () => { clearInterval(pomoTimer); toast("Pomodoro stopped"); };
+  $("btnPomoStop").onclick = () => {
+    clearInterval(pomoTimer);
+    if (connected) {
+      sendCtrl({ action: "game_opt", opt: "exit" }, "Pomodoro stopped");
+    } else {
+      toast("Pomodoro stopped");
+    }
+  };
 
   $("btnMicEnable").onclick = () => sendCtrl({ action: "music_spectrum", style: Number($("micStyle").value) || 0, use_device_mic: true }, "Mic rhythm enabled");
   $("btnAmbApply").onclick = () => sendCtrl({ action: "ambient_light", style_light: Number($("ambMode").value), color: $("ambCol").value }, "Ambient light applied");

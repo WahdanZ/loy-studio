@@ -207,7 +207,7 @@ DEVICE_SCHEDULE_DISABLED_MSG = (
     "On-device schedules are turned off: on this display firmware they show the startup logo and "
     "disturb normal switching. Use the Mac schedule instead (it runs while LOY Studio is open)."
 )
-APP_VERSION = "4.4.3"
+APP_VERSION = "4.4.4"
 GITHUB_REPO = "WahdanZ/loy-studio"
 
 
@@ -1217,16 +1217,14 @@ async def handle_control(req: web.Request) -> web.Response:
                 state.in_modal_mode = True
                 state.save_display_state()
             elif action == "countdown":
-                res = await t.send_frame(
-                    cmd_set_countdown(
-                        int(body.get("hours", 0)),
-                        int(body.get("minutes", 5)),
-                        int(body.get("seconds", 0)),
-                        sno=t.next_sno(),
-                    )
-                )
+                h = max(0, min(99, int(body.get("hours", 0))))
+                m = max(0, min(59, int(body.get("minutes", 5))))
+                s = max(0, min(59, int(body.get("seconds", 0))))
+                res = await t.send_frame(cmd_set_countdown(h, m, s, sno=t.next_sno()))
                 state.in_modal_mode = True
                 state.save_display_state()
+                lbl = f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+                state.set_now_playing("timer", f"Timer {lbl}", subtitle="Live hardware countdown", source=_detect_req_source(req))
             elif action == "scoreboard":
                 res = await t.send_frame(
                     cmd_set_scoreboard(int(body.get("red", 0)), int(body.get("blue", 0)), sno=t.next_sno())
