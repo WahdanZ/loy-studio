@@ -44,7 +44,7 @@ if sys.platform == "win32":
     cmd.append("--onefile")
     cmd += ["--hidden-import", "bleak.backends.winrt"]
 elif sys.platform == "darwin":
-    cmd += ["--hidden-import", "bleak.backends.corebluetooth"]
+    cmd += ["--hidden-import", "bleak.backends.corebluetooth", "--hidden-import", "EventKit"]
 else:
     cmd += ["--hidden-import", "bleak.backends.bluezdbus"]
 

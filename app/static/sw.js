@@ -1,5 +1,5 @@
 /* LOY Studio 2.0 Service Worker — Caches static shell only, never API/WS */
-const CACHE_NAME = "loy-studio-shell-v16";
+const CACHE_NAME = "loy-studio-shell-v17";
 const SHELL_ASSETS = ["/", "/static/style.css", "/static/app.js", "/static/manifest.json"];
 
 self.addEventListener("install", (event) => {

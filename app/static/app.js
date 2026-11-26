@@ -1981,11 +1981,11 @@
 
   async function refreshSmartConfig() {
     try {
-      const { config, context, calendars, active_override, weather_cache } = await api("/api/smart_config");
+      const { config, context, calendars, calendar_auth, active_override, weather_cache } = await api("/api/smart_config");
       if ($("ctxCalName") && Array.isArray(calendars)) {
         const cur = config.calendar_name || "";
         const sel = $("ctxCalName");
-        sel.innerHTML = `<option value="">All macOS Calendars</option>`;
+        sel.innerHTML = `<option value="">All macOS Calendars (${calendars.length})</option>`;
         calendars.forEach((c) => {
           const opt = document.createElement("option");
           const label = c.source ? `${c.source} · ${c.title}` : c.title;
@@ -2014,9 +2014,15 @@
       }
       if ($("ctxCalReadout") && context) {
         const ev = context.next_event;
-        $("ctxCalReadout").textContent = ev
-          ? `Next (${ev.source || "cal"}): ${ev.title} in ${ev.minutes_left}m`
-          : (config.calendar_alerts || config.calendar_clock_enabled ? "Calendar synced · No meetings in next 2h" : "Uses macOS EventKit or optional .ics URL below");
+        if (ev) {
+          $("ctxCalReadout").textContent = `Next (${ev.source || "cal"}): ${ev.title} in ${ev.minutes_left}m`;
+        } else if (calendar_auth === "not_determined" || calendar_auth === "write_only") {
+          $("ctxCalReadout").textContent = "Tap the refresh button (↻) above to grant macOS Calendar permission";
+        } else if (calendar_auth === "denied") {
+          $("ctxCalReadout").textContent = "Calendar denied — enable LOY Studio in System Settings → Privacy → Calendars";
+        } else {
+          $("ctxCalReadout").textContent = (config.calendar_alerts || config.calendar_clock_enabled) ? "Calendar synced · No meetings in next 2h" : "Pick a macOS calendar above or paste .ics URL";
+        }
       }
       if ($("wxReadout") && weather_cache) {
         $("wxReadout").textContent = `Last: ${weather_cache.city} · ${weather_cache.temp_c}°C (${weather_cache.kind})`;
@@ -2054,8 +2060,12 @@
     if ($(id)) $(id).onchange = saveSmartConfig;
   });
   if ($("btnCalRefresh")) $("btnCalRefresh").onclick = async () => {
-    await refreshSmartConfig();
-    toast("Refreshed macOS calendars");
+    try {
+      const res = await api("/api/calendars?request=1");
+      await refreshSmartConfig();
+      const n = (res.calendars || []).length;
+      toast(n ? `Loaded ${n} macOS calendar(s)` : `Calendar access: ${res.auth_status} (check System Settings → Privacy → Calendars)`);
+    } catch (err) { toast(err.message); }
   };
   if ($("btnCalClockSend")) $("btnCalClockSend").onclick = async () => {
     try {

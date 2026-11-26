@@ -235,97 +235,112 @@ def _fetch_upcoming_ics_event(ics_url: str, within_minutes: int = 120) -> Option
     return {"title": best[1], "minutes_left": best[0], "source": "ics"}
 
 
-def list_macos_calendars() -> List[Dict[str, str]]:
+_ek_store_singleton = None
+
+
+def _get_ek_store(request_access: bool = False):
+    """Return a native macOS EventKit EKEventStore (triggers permission prompt if request_access=True)."""
+    global _ek_store_singleton
+    if sys.platform != "darwin":
+        return None
+    try:
+        import threading
+        import EventKit  # type: ignore
+
+        if _ek_store_singleton is None:
+            _ek_store_singleton = EventKit.EKEventStore.alloc().init()
+        store = _ek_store_singleton
+        status = int(EventKit.EKEventStore.authorizationStatusForEntityType_(0))
+        # macOS 14+: 0=NotDetermined, 1=Restricted, 2=Denied, 3=FullAccess, 4=WriteOnly
+        if status in (0, 4) and request_access:
+            done = threading.Event()
+            if hasattr(store, "requestFullAccessToEventsWithCompletion_"):
+                store.requestFullAccessToEventsWithCompletion_(lambda granted, err: done.set())
+            else:
+                store.requestAccessToEntityType_completion_(0, lambda granted, err: done.set())
+            done.wait(timeout=15.0)
+            # Re-init store after permission grant so macOS refreshes calendars immediately
+            _ek_store_singleton = EventKit.EKEventStore.alloc().init()
+            store = _ek_store_singleton
+        return store
+    except Exception:
+        return None
+
+
+def get_macos_calendar_auth_status() -> str:
+    if sys.platform != "darwin":
+        return "unsupported"
+    try:
+        import EventKit  # type: ignore
+
+        st = int(EventKit.EKEventStore.authorizationStatusForEntityType_(0))
+        return {0: "not_determined", 1: "restricted", 2: "denied", 3: "authorized", 4: "write_only"}.get(st, str(st))
+    except Exception:
+        return "unavailable"
+
+
+def list_macos_calendars(*, request_access: bool = False) -> List[Dict[str, str]]:
     """List all macOS EventKit calendars with their account/source (e.g. Exchange, iCloud, On My Mac)."""
     if sys.platform != "darwin":
         return []
-    jxa = '''
-ObjC.import("EventKit");
-ObjC.import("Foundation");
-var store = $.EKEventStore.alloc.init;
-var cals = store.calendarsForEntityType(0);
-var out = [];
-if (cals && cals.count > 0) {
-  for (var i = 0; i < cals.count; i++) {
-    var c = cals.objectAtIndex(i);
-    var cid = ObjC.unwrap(c.calendarIdentifier) || "";
-    var title = ObjC.unwrap(c.title) || "Calendar";
-    var src = c.source ? (ObjC.unwrap(c.source.title) || "") : "";
-    out.push({ id: cid, title: title, source: src });
-  }
-}
-JSON.stringify(out);
-'''
+    store = _get_ek_store(request_access=request_access)
+    if store is None:
+        return []
     try:
-        raw = subprocess.check_output(
-            ["osascript", "-l", "JavaScript", "-e", jxa],
-            text=True, stderr=subprocess.DEVNULL, timeout=4.0,
-        ).strip()
-        if raw:
-            items = json.loads(raw)
-            if isinstance(items, list):
-                return items
+        cals = store.calendarsForEntityType_(0) or []
+        out: List[Dict[str, str]] = []
+        for c in cals:
+            cid = str(c.calendarIdentifier() or "")
+            title = str(c.title() or "Calendar")
+            src_obj = c.source()
+            src = str(src_obj.title() or "") if src_obj else ""
+            out.append({"id": cid, "title": title, "source": src})
+        out.sort(key=lambda x: (x["source"].lower(), x["title"].lower()))
+        return out
     except Exception:
-        pass
-    return []
+        return []
 
 
 def _get_macos_eventkit_event(within_minutes: int = 120, calendar_name: str = "") -> Optional[Dict[str, Any]]:
-    """Fast native macOS EventKit query via JXA (handles recurring meetings & optional calendar filter)."""
-    cal_filter_json = json.dumps(calendar_name.strip())
-    jxa = f'''
-ObjC.import("EventKit");
-ObjC.import("Foundation");
-var store = $.EKEventStore.alloc.init;
-var filterVal = {cal_filter_json};
-var calList = $();
-if (filterVal) {{
-  var allCals = store.calendarsForEntityType(0);
-  var matched = $.NSMutableArray.alloc.init;
-  if (allCals && allCals.count > 0) {{
-    for (var j = 0; j < allCals.count; j++) {{
-      var c = allCals.objectAtIndex(j);
-      var cid = ObjC.unwrap(c.calendarIdentifier) || "";
-      var ctitle = ObjC.unwrap(c.title) || "";
-      var csrc = c.source ? (ObjC.unwrap(c.source.title) || "") : "";
-      var label = csrc ? (csrc + " · " + ctitle) : ctitle;
-      if (cid === filterVal || ctitle === filterVal || label === filterVal) {{
-        matched.addObject(c);
-      }}
-    }}
-  }}
-  calList = matched;
-}}
-var now = $.NSDate.date;
-var end = now.dateByAddingTimeInterval({int(within_minutes) * 60});
-var pred = store.predicateForEventsWithStartDateEndDateCalendars(now, end, calList);
-var evs = store.eventsMatchingPredicate(pred);
-var bestMins = 999999;
-var bestTitle = "";
-if (evs && evs.count > 0) {{
-  for (var i = 0; i < evs.count; i++) {{
-    var ev = evs.objectAtIndex(i);
-    if (ev.isAllDay) continue;
-    var diff = ev.startDate.timeIntervalSinceDate(now);
-    if (diff >= -60 && diff <= {int(within_minutes) * 60}) {{
-      var mins = Math.max(0, Math.round(diff / 60));
-      if (mins < bestMins) {{
-        bestMins = mins;
-        bestTitle = ObjC.unwrap(ev.title) || "Meeting";
-      }}
-    }}
-  }}
-}}
-bestTitle ? (bestTitle + "||" + bestMins) : "";
-'''
+    """Fast native macOS EventKit query via PyObjC (handles recurring meetings & calendar filter)."""
+    store = _get_ek_store(request_access=False)
+    if store is None:
+        return None
     try:
-        out = subprocess.check_output(
-            ["osascript", "-l", "JavaScript", "-e", jxa],
-            text=True, stderr=subprocess.DEVNULL, timeout=4.0,
-        ).strip()
-        if "||" in out:
-            title, mins = out.split("||", 1)
-            return {"title": title.strip()[:24], "minutes_left": max(0, int(float(mins.strip()))), "source": "eventkit"}
+        from Foundation import NSDate  # type: ignore
+
+        cal_list = None
+        fv = calendar_name.strip()
+        if fv:
+            all_cals = store.calendarsForEntityType_(0) or []
+            matched = []
+            for c in all_cals:
+                cid = str(c.calendarIdentifier() or "")
+                ctitle = str(c.title() or "")
+                csrc = str(c.source().title() or "") if c.source() else ""
+                label = f"{csrc} · {ctitle}" if csrc else ctitle
+                if fv in (cid, ctitle, label):
+                    matched.append(c)
+            if not matched:
+                return None
+            cal_list = matched
+
+        now_ns = NSDate.date()
+        end_ns = now_ns.dateByAddingTimeInterval_(float(within_minutes) * 60.0)
+        pred = store.predicateForEventsWithStartDate_endDate_calendars_(now_ns, end_ns, cal_list)
+        evs = store.eventsMatchingPredicate_(pred) or []
+        best: Optional[Tuple[int, str]] = None
+        for ev in evs:
+            if ev.isAllDay():
+                continue
+            diff = float(ev.startDate().timeIntervalSinceDate_(now_ns))
+            if -60.0 <= diff <= float(within_minutes) * 60.0:
+                mins = max(0, int(round(diff / 60.0)))
+                title = str(ev.title() or "Meeting").strip()[:24]
+                if best is None or mins < best[0]:
+                    best = (mins, title)
+        if best is not None:
+            return {"title": best[1], "minutes_left": best[0], "source": "eventkit"}
     except Exception:
         pass
     return None

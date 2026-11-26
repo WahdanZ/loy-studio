@@ -86,6 +86,7 @@ from app.creative import (
 from app.smart_features import (
     detect_mac_context,
     fetch_open_meteo_weather,
+    get_macos_calendar_auth_status,
     get_upcoming_calendar_event,
     list_macos_calendars,
     render_calendar_clock_bg_gif,
@@ -2667,9 +2668,11 @@ async def handle_calendar_clock(req: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=500)
 
 
-async def handle_calendars_list(_req: web.Request) -> web.Response:
-    cals = await asyncio.to_thread(list_macos_calendars)
-    return web.json_response({"calendars": cals})
+async def handle_calendars_list(req: web.Request) -> web.Response:
+    req_access = req.query.get("request", "0") in ("1", "true", "yes")
+    cals = await asyncio.to_thread(list_macos_calendars, request_access=req_access)
+    auth = await asyncio.to_thread(get_macos_calendar_auth_status)
+    return web.json_response({"calendars": cals, "auth_status": auth})
 
 
 async def handle_weather_clock(req: web.Request) -> web.Response:
@@ -2695,11 +2698,13 @@ async def handle_smart_config(req: web.Request) -> web.Response:
             ics_url=str(cfg.get("calendar_ics_url") or ""),
             calendar_name=str(cfg.get("calendar_name") or ""),
         )
-        cals = await asyncio.to_thread(list_macos_calendars)
+        cals = await asyncio.to_thread(list_macos_calendars, request_access=False)
+        cal_auth = await asyncio.to_thread(get_macos_calendar_auth_status)
         return web.json_response({
             "config": cfg,
             "context": ctx,
             "calendars": cals,
+            "calendar_auth": cal_auth,
             "active_override": getattr(state, "_context_override", None),
             "weather_cache": getattr(state, "_weather_cache", None),
         })
