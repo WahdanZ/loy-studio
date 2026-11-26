@@ -137,7 +137,7 @@ SMART_CONFIG_FILE = DATA_DIR / "smart_config.json"
 LAN_AUTH_FILE = DATA_DIR / ".lan_auth.json"
 GH_TOKEN_FILE = DATA_DIR / ".github_token"
 NOW_PLAYING_FILE = DATA_DIR / ".now_playing.json"
-APP_VERSION = "4.3.1"
+APP_VERSION = "4.3.2"
 GITHUB_REPO = "WahdanZ/loy-studio"
 
 
@@ -263,6 +263,7 @@ class ControllerState:
         self.bound_port: int = 18420
         self.auto_reconnect: bool = False
         self.in_modal_mode: bool = False  # True when panel is in built-in Clock/Timer/Scoreboard/Game mode
+        self.active_slot: int = 1  # Double-buffering ping-pong slot (1 <-> 2) for zero-flicker transitions
         self.last_ble_address: Optional[str] = None
         self.last_ble_name: Optional[str] = None
         self._load_last_device()
@@ -329,6 +330,12 @@ class ControllerState:
         transport.set_progress_callback(
             lambda prog: self.broadcast_soon("transfer_update", prog.to_dict())
         )
+
+    def next_back_slot(self, requested_slot: Optional[int] = None) -> int:
+        """Pick the hidden back-buffer slot (1 <-> 2) so current display stays visible during BLE upload."""
+        if requested_slot is not None and requested_slot > 2:
+            return requested_slot
+        return 2 if self.active_slot == 1 else 1
 
     def _load_now_playing(self) -> None:
         if NOW_PLAYING_FILE.exists():
@@ -689,9 +696,9 @@ async def _ensure_exit_modal_mode(clear_temp_alert: bool = True) -> None:
         if getattr(state, "_temp_alert_active", False) and state.transport and state.transport.is_connected:
             try:
                 t = state.transport
-                await t.send_frame(cmd_delete_programs([2], sno=t.next_sno()))
-                await t.send_frame(cmd_dispatch_program(1, sno=t.next_sno()))
-                await t.send_frame(cmd_pgm_play(model=1, index=0, sno=t.next_sno()))
+                await t.send_frame(cmd_delete_programs([3], sno=t.next_sno()))
+                await t.send_frame(cmd_dispatch_program(state.active_slot, sno=t.next_sno()))
+                await t.send_frame(cmd_pgm_play(model=1, index=(state.active_slot - 1) & 0xFF, sno=t.next_sno()))
             except Exception:
                 pass
             state._temp_alert_active = False
@@ -877,25 +884,30 @@ async def handle_upload_frames(req: web.Request) -> web.Response:
     body = await req.json()
     width = int(body.get("width", state.width))
     height = int(body.get("height", state.height))
-    slot = int(body.get("slot", 1))
+    slot = state.next_back_slot(int(body["slot"]) if "slot" in body else None)
     speed = int(body.get("speed", 9))
     frames_b64: List[str] = body["frames"]
 
     frames_rgb = [base64.b64decode(b) for b in frames_b64]
     ystp = encode_ystp01(frames_rgb, width, height)
-    wire_frames = build_image_program_frames(
-        ystp,
-        width,
-        height,
-        program_id=slot,
-        start_sno=state.transport.next_sno(),
-        speed=speed,
-        time_stay=0 if len(frames_rgb) > 1 else 3,
-    )
     async with state.lock:
         try:
             await _ensure_exit_modal_mode()
+            wire_frames = build_image_program_frames(
+                ystp,
+                width,
+                height,
+                program_id=slot,
+                start_sno=state.transport.next_sno(),
+                speed=speed,
+                time_stay=0 if len(frames_rgb) > 1 else 3,
+                show_now=False,
+            )
             res = await state.transport.send_frames(wire_frames)
+            await state.transport.send_frame(cmd_dispatch_program(slot, sno=state.transport.next_sno()))
+            await state.transport.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=state.transport.next_sno()))
+            if slot in (1, 2):
+                state.active_slot = slot
             try:
                 pbuf = io.BytesIO()
                 Image.frombytes("RGB", (width, height), frames_rgb[0]).save(pbuf, format="PNG")
@@ -1290,15 +1302,22 @@ async def handle_export_gif(req: web.Request) -> web.Response:
     if send_to_display:
         if not state.transport or not state.transport.is_connected:
             return web.json_response({"error": "Not connected to display"}, status=400)
+        target_slot = state.next_back_slot(int(body["slot"]) if "slot" in body else None)
         async with state.lock:
+            await _ensure_exit_modal_mode()
             wire_frames = build_gif_program_frames(
                 gif_bytes,
                 width,
                 height,
-                program_id=slot,
+                program_id=target_slot,
                 start_sno=state.transport.next_sno(),
+                show_now=False,
             )
             res = await state.transport.send_frames(wire_frames)
+            await state.transport.send_frame(cmd_dispatch_program(target_slot, sno=state.transport.next_sno()))
+            await state.transport.send_frame(cmd_pgm_play(model=1, index=(target_slot - 1) & 0xFF, sno=state.transport.next_sno()))
+            if target_slot in (1, 2):
+                state.active_slot = target_slot
             src = _detect_req_source(req)
             state.set_now_playing(
                 "canvas", f"Custom Animation ({len(frames_rgb)}f)",
@@ -1377,16 +1396,19 @@ async def handle_gif_pack_send(req: web.Request) -> web.Response:
     if not gif_path.is_file():
         return web.json_response({"error": f"GIF not found: {filename}"}, status=404)
     raw = gif_path.read_bytes()
-    slot = int(body.get("slot", 1))
+    slot = state.next_back_slot(int(body["slot"]) if "slot" in body else None)
     src = _detect_req_source(req)
     async with state.lock:
         try:
             await _ensure_exit_modal_mode()
             wire_frames = build_gif_program_frames(
-                raw, state.width, state.height, program_id=slot, start_sno=state.transport.next_sno()
+                raw, state.width, state.height, program_id=slot, start_sno=state.transport.next_sno(), show_now=False
             )
             res = await state.transport.send_frames(wire_frames, label=f"GIF: {filename}")
+            await state.transport.send_frame(cmd_dispatch_program(slot, sno=state.transport.next_sno()))
             await state.transport.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=state.transport.next_sno()))
+            if slot in (1, 2):
+                state.active_slot = slot
             pretty = filename.rsplit(".", 1)[0].replace("_", " ").title()
             pin = "pinOnAir" if "on_air" in filename else ("pinCoding" if "coding" in filename else "")
             state.set_now_playing(
@@ -1702,7 +1724,7 @@ async def handle_hw_text_clock(req: web.Request) -> web.Response:
     bg = _parse_hex_rgb(body.get("bg", "#000000"))
     font_size = int(body.get("size", 16))
     scroll = body.get("scroll", "static")
-    slot = int(body.get("slot", 1))
+    slot = state.next_back_slot(int(body["slot"]) if "slot" in body else None)
     bg_gif_name = body.get("bg_gif", "")
     bg_mode = str(body.get("bg_mode", "behind"))
     w, h = state.width, state.height
@@ -1725,16 +1747,19 @@ async def handle_hw_text_clock(req: web.Request) -> web.Response:
             if regions is None:
                 wire_frames = build_text_clock_program_frames(
                     template, w, h, color=fg, bg_color=bg, font_size=font_size, scroll=scroll,
-                    program_id=slot, start_sno=state.transport.next_sno(),
+                    program_id=slot, start_sno=state.transport.next_sno(), show_now=False,
                     background_resource=bg_resource, bg_mode=bg_mode,
                 )
             else:
                 wire_frames = build_multi_region_hw_clock_frames(
-                    regions, w, h, program_id=slot, start_sno=state.transport.next_sno(),
+                    regions, w, h, program_id=slot, start_sno=state.transport.next_sno(), show_now=False,
                     background_resource=bg_resource, bg_mode=bg_mode,
                 )
             res = await state.transport.send_frames(wire_frames, label=f"Clock: {shape}")
+            await state.transport.send_frame(cmd_dispatch_program(slot, sno=state.transport.next_sno()))
             await state.transport.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=state.transport.next_sno()))
+            if slot in (1, 2):
+                state.active_slot = slot
             src = _detect_req_source(req)
             col_q = urllib.parse.quote(body.get("color", "#05d9e8"))
             acc_q = urllib.parse.quote(body.get("accent", "#ff2a6d"))
@@ -2771,10 +2796,11 @@ async def _flash_temporary_gif(gif_bytes: bytes, label: str, duration_s: float =
         if brightness is not None:
             await t.send_frame(cmd_set_brightness(max(1, min(15, int(brightness))), sno=t.next_sno()))
         wire_frames = build_gif_program_frames(
-            gif_bytes, state.width, state.height, program_id=2, start_sno=t.next_sno(), show_now=True, data_save=1
+            gif_bytes, state.width, state.height, program_id=3, start_sno=t.next_sno(), show_now=False, data_save=1
         )
         res = await t.send_frames(wire_frames, label=label)
-        await t.send_frame(cmd_pgm_play(model=1, index=1, sno=t.next_sno()))
+        await t.send_frame(cmd_dispatch_program(3, sno=t.next_sno()))
+        await t.send_frame(cmd_pgm_play(model=1, index=2, sno=t.next_sno()))
         state._temp_alert_active = True
 
     async def _restore_slot1() -> None:
@@ -2789,9 +2815,9 @@ async def _flash_temporary_gif(gif_bytes: bytes, label: str, duration_s: float =
                 t2 = state.transport
                 if brightness is not None:
                     await t2.send_frame(cmd_set_brightness(max(1, min(15, int(prev_bri))), sno=t2.next_sno()))
-                await t2.send_frame(cmd_delete_programs([2], sno=t2.next_sno()))
-                await t2.send_frame(cmd_dispatch_program(1, sno=t2.next_sno()))
-                await t2.send_frame(cmd_pgm_play(model=1, index=0, sno=t2.next_sno()))
+                await t2.send_frame(cmd_delete_programs([3], sno=t2.next_sno()))
+                await t2.send_frame(cmd_dispatch_program(state.active_slot, sno=t2.next_sno()))
+                await t2.send_frame(cmd_pgm_play(model=1, index=(state.active_slot - 1) & 0xFF, sno=t2.next_sno()))
                 state._temp_alert_active = False
         except asyncio.CancelledError:
             pass
@@ -2844,13 +2870,16 @@ async def _upload_weather_clock(city: str, source: str = "App") -> Dict[str, Any
     async with state.lock:
         t = state.transport
         await _ensure_exit_modal_mode()
+        slot = state.next_back_slot()
         await t.send_frame(cmd_sync_time(sno=t.next_sno()))
         wire_frames = build_multi_region_hw_clock_frames(
-            regions, w, h, program_id=1, start_sno=t.next_sno(), show_now=True,
+            regions, w, h, program_id=slot, start_sno=t.next_sno(), show_now=False,
             background_resource=bg_gif, bg_mode="behind",
         )
         res = await t.send_frames(wire_frames, label=f"Weather: {wx['city']} {wx['temp_c']}C")
-        await t.send_frame(cmd_pgm_play(model=1, index=0, sno=t.next_sno()))
+        await t.send_frame(cmd_dispatch_program(slot, sno=t.next_sno()))
+        await t.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=t.next_sno()))
+        state.active_slot = slot
     b64_prev = "data:image/gif;base64," + base64.b64encode(bg_gif).decode("ascii")
     state.set_now_playing(
         "clock", f"Weather Clock · {wx['city']} {wx['temp_c']}°C",
@@ -2872,14 +2901,17 @@ async def _upload_calendar_clock(ics_url: str = "", calendar_name: str = "", sou
     async with state.lock:
         t = state.transport
         await _ensure_exit_modal_mode()
+        slot = state.next_back_slot()
         await t.send_frame(cmd_sync_time(sno=t.next_sno()))
         wire_frames = build_multi_region_hw_clock_frames(
-            regions, w, h, program_id=1, start_sno=t.next_sno(), show_now=True,
+            regions, w, h, program_id=slot, start_sno=t.next_sno(), show_now=False,
             background_resource=bg_gif, bg_mode="behind",
         )
         lbl = f"Cal: {ev['title']} ({ev['minutes_left']}m)" if ev else "Cal Clock: Free"
         res = await t.send_frames(wire_frames, label=lbl)
-        await t.send_frame(cmd_pgm_play(model=1, index=0, sno=t.next_sno()))
+        await t.send_frame(cmd_dispatch_program(slot, sno=t.next_sno()))
+        await t.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=t.next_sno()))
+        state.active_slot = slot
     b64_prev = "data:image/gif;base64," + base64.b64encode(bg_gif).decode("ascii")
     sub = f"Next: {ev['title']} in {ev['minutes_left']}m · via {source}" if ev else f"No meetings today · via {source}"
     state.set_now_playing(
