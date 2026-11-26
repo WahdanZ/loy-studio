@@ -58,6 +58,16 @@ subprocess.check_call(cmd, cwd=str(ROOT))
 
 if sys.platform == "darwin":
     import plistlib
+    import re
+
+    app_ver = "4.3.3"
+    try:
+        srv_txt = (ROOT / "app" / "server.py").read_text(encoding="utf-8")
+        m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', srv_txt)
+        if m:
+            app_ver = m.group(1)
+    except Exception:
+        pass
 
     app_bundle = ROOT / "dist" / "LOY Studio.app"
     plist_path = app_bundle / "Contents" / "Info.plist"
@@ -72,9 +82,11 @@ if sys.platform == "darwin":
         plist["NSAppleEventsUsageDescription"] = "LOY Studio reads active app and Calendar info for automatic desk modes."
         plist["CFBundleDisplayName"] = "LOY Studio"
         plist["CFBundleIdentifier"] = "com.loystudio.desktop"
+        plist["CFBundleShortVersionString"] = app_ver
+        plist["CFBundleVersion"] = app_ver
         with plist_path.open("wb") as f:
             plistlib.dump(plist, f)
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app_bundle)], check=False)
-        print("Patched Info.plist with macOS Bluetooth & Local Network permissions.")
+        print(f"Patched Info.plist (v{app_ver}) with macOS Bluetooth & Local Network permissions.")
 
 print("\nBuild complete! Check dist/ for your portable LOY Studio app.")

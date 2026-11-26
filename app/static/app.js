@@ -2366,20 +2366,32 @@
     }
   }
 
+  let _updatingApp = false;
   async function applyAppUpdate() {
+    if (_updatingApp) return;
+    _updatingApp = true;
+    const btns = [$("btnUpdApply"), $("btnBannerUpdate")].filter(Boolean);
+    btns.forEach((b) => { b.disabled = true; b.dataset.prevText = b.textContent; b.textContent = "Downloading..."; });
     try {
       toast("Downloading update & preparing restart...");
-      if ($("updStatusText")) $("updStatusText").textContent = "Downloading latest release... please wait (~10s).";
+      if ($("updStatusText")) $("updStatusText").textContent = "Downloading latest release... please wait (~10–20s).";
       const res = await api("/api/update/apply", { method: "POST", body: "{}" });
       if (res.mode === "browser" && res.release_url) {
         window.open(res.release_url, "_blank");
         toast(res.message || "Opened GitHub Release page");
+        btns.forEach((b) => { b.disabled = false; b.textContent = b.dataset.prevText || "Install Update"; });
+        _updatingApp = false;
       } else if (res.restarting) {
-        toast(`Installing v${res.latest_version} — LOY Studio will relaunch in 3s!`);
+        const where = res.install_path ? ` (${res.install_path})` : "";
+        if ($("updStatusText")) $("updStatusText").textContent = `Installing v${res.latest_version}${where} — relaunching shortly...`;
+        btns.forEach((b) => { b.textContent = "Restarting..."; });
+        toast(`Installing v${res.latest_version} — LOY Studio will relaunch in a few seconds!`);
       }
     } catch (err) {
       toast(err.message);
       if ($("updStatusText")) $("updStatusText").textContent = `Update failed: ${err.message}`;
+      btns.forEach((b) => { b.disabled = false; b.textContent = b.dataset.prevText || "Install Update"; });
+      _updatingApp = false;
     }
   }
 

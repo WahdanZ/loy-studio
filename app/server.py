@@ -109,12 +109,34 @@ GIFS_DIR = BUNDLE_ROOT / "gifs"
 
 
 def _resolve_data_dir() -> Path:
-    """Use a portable data folder next to the executable when bundled, or `app/` in dev."""
+    """Use a persistent data folder outside the .app bundle when frozen, or `app/` in dev."""
     if getattr(sys, "frozen", False):
         exe_path = Path(sys.executable).resolve()
-        # On macOS .app bundles, store portable data next to the .app folder if writable
-        base = exe_path.parents[3] if ".app" in exe_path.parts else exe_path.parent
-        candidate = base / "LOY-Studio-Data"
+        app_bundle = next((p for p in exe_path.parents if p.suffix == ".app"), None)
+        if sys.platform == "darwin" and app_bundle is not None:
+            # Always keep macOS user data outside the .app bundle so in-app updates never wipe it
+            # and macOS App Translocation / codesign never breaks.
+            target = Path.home() / "Library" / "Application Support" / "LOY Studio"
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                target = Path.home() / ".loy-studio"
+                target.mkdir(parents=True, exist_ok=True)
+            # One-time migration from legacy inside-bundle LOY-Studio-Data if present
+            legacy = exe_path.parent / "LOY-Studio-Data"
+            if legacy.is_dir() and not any(target.iterdir()):
+                try:
+                    for item in legacy.iterdir():
+                        dst = target / item.name
+                        if not dst.exists():
+                            if item.is_dir():
+                                shutil.copytree(item, dst)
+                            else:
+                                shutil.copy2(item, dst)
+                except Exception:
+                    pass
+            return target
+        candidate = exe_path.parent / "LOY-Studio-Data"
         try:
             candidate.mkdir(parents=True, exist_ok=True)
             test_file = candidate / ".write_test"
@@ -137,7 +159,7 @@ SMART_CONFIG_FILE = DATA_DIR / "smart_config.json"
 LAN_AUTH_FILE = DATA_DIR / ".lan_auth.json"
 GH_TOKEN_FILE = DATA_DIR / ".github_token"
 NOW_PLAYING_FILE = DATA_DIR / ".now_playing.json"
-APP_VERSION = "4.3.2"
+APP_VERSION = "4.3.3"
 GITHUB_REPO = "WahdanZ/loy-studio"
 
 
@@ -2972,12 +2994,21 @@ def _get_github_token() -> str:
     env_tok = (os.environ.get("LOY_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
     if env_tok:
         return env_tok
-    try:
-        out = subprocess.check_output(["gh", "auth", "token"], text=True, stderr=subprocess.DEVNULL, timeout=2.0).strip()
-        if out:
-            return out
-    except Exception:
-        pass
+    gh_candidates = [
+        shutil.which("gh"),
+        "/opt/homebrew/bin/gh",
+        "/usr/local/bin/gh",
+        "/opt/local/bin/gh",
+    ]
+    for gh_bin in gh_candidates:
+        if not gh_bin or not Path(gh_bin).exists():
+            continue
+        try:
+            out = subprocess.check_output([gh_bin, "auth", "token"], text=True, stderr=subprocess.DEVNULL, timeout=2.5).strip()
+            if out:
+                return out
+        except Exception:
+            continue
     return ""
 
 
@@ -3047,12 +3078,16 @@ async def handle_update_token(req: web.Request) -> web.Response:
 async def handle_update_apply(_req: web.Request) -> web.Response:
     from app.smart_features import _build_ssl_context
 
-    info = await asyncio.to_thread(_check_github_update)
+    try:
+        info = await asyncio.to_thread(_check_github_update)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": f"Update check failed: {exc}"}, status=500)
+
     if not info.get("ok"):
         return web.json_response(info, status=400)
     asset_url = info.get("asset_api_url") or info.get("asset_download_url")
     if not asset_url:
-        return web.json_response({"error": "No matching portable asset found for this OS"}, status=404)
+        return web.json_response({"ok": False, "error": "No matching portable asset found for this OS"}, status=404)
 
     if not getattr(sys, "frozen", False):
         return web.json_response({
@@ -3066,70 +3101,181 @@ async def handle_update_apply(_req: web.Request) -> web.Response:
     tmp_dir = Path(tempfile.mkdtemp(prefix="loy_update_"))
     zip_path = tmp_dir / (info.get("asset_name") or "update.zip")
 
-    def _download_zip() -> None:
+    def _download_zip() -> int:
         headers = {"Accept": "application/octet-stream", "User-Agent": f"LOY-Studio/{APP_VERSION}"}
         if tok:
             headers["Authorization"] = f"Bearer {tok}"
         req = urllib.request.Request(asset_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=60, context=_build_ssl_context()) as r, zip_path.open("wb") as out:
+        with urllib.request.urlopen(req, timeout=120, context=_build_ssl_context()) as r, zip_path.open("wb") as out:
             shutil.copyfileobj(r, out)
+        return zip_path.stat().st_size
 
-    await asyncio.to_thread(_download_zip)
+    try:
+        size_bytes = await asyncio.to_thread(_download_zip)
+        if size_bytes < 100_000:
+            return web.json_response(
+                {"ok": False, "error": f"Downloaded update archive is unexpectedly small ({size_bytes} bytes)."},
+                status=500,
+            )
+    except Exception as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return web.json_response({"ok": False, "error": f"Download failed: {exc}"}, status=500)
 
-    # Gracefully disconnect BLE before swapping and restarting
-    if state.transport and state.transport.is_connected:
-        try:
-            await state.transport.disconnect()
-        except Exception:
-            pass
+    install_path = ""
+    log_path = ""
+    cur_pid = os.getpid()
 
-    if sys.platform == "darwin":
-        exe_path = Path(sys.executable).resolve()
-        app_bundle = next((p for p in exe_path.parents if p.suffix == ".app"), None)
-        if not app_bundle:
-            return web.json_response({"error": "Could not locate .app bundle path"}, status=500)
-        extract_dir = tmp_dir / "extracted"
-        extract_dir.mkdir(exist_ok=True)
-        subprocess.check_call(["ditto", "-x", "-k", str(zip_path), str(extract_dir)])
-        new_app = next(extract_dir.glob("*.app"), None)
-        if not new_app:
-            return web.json_response({"error": "Downloaded archive did not contain a .app bundle"}, status=500)
-        swap_sh = tmp_dir / "swap.sh"
-        swap_sh.write_text(
-            f"#!/bin/sh\n"
-            f"sleep 1.5\n"
-            f"rm -rf \"{app_bundle}\"\n"
-            f"mv \"{new_app}\" \"{app_bundle}\"\n"
-            f"xattr -dr com.apple.quarantine \"{app_bundle}\" 2>/dev/null || true\n"
-            f"open -a \"{app_bundle}\"\n"
-            f"rm -rf \"{tmp_dir}\"\n",
-            encoding="utf-8",
-        )
-        swap_sh.chmod(0o755)
-        subprocess.Popen(["/bin/sh", str(swap_sh)], start_new_session=True)
-    elif sys.platform == "win32":
-        import zipfile
+    try:
+        if sys.platform == "darwin":
+            exe_path = Path(sys.executable).resolve()
+            app_bundle = next((p for p in exe_path.parents if p.suffix == ".app"), None)
+            if not app_bundle:
+                return web.json_response({"ok": False, "error": "Could not locate .app bundle path"}, status=500)
 
-        exe_path = Path(sys.executable).resolve()
-        extract_dir = tmp_dir / "extracted"
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(extract_dir)
-        new_exe = next(extract_dir.glob("*.exe"), None)
-        if not new_exe:
-            return web.json_response({"error": "Downloaded archive did not contain an .exe"}, status=500)
-        bat = tmp_dir / "swap.bat"
-        bat.write_text(
-            f"@echo off\r\n"
-            f"timeout /t 2 /nobreak >nul\r\n"
-            f"move /y \"{new_exe}\" \"{exe_path}\"\r\n"
-            f"start \"\" \"{exe_path}\"\r\n",
-            encoding="utf-8",
-        )
-        subprocess.Popen(["cmd", "/c", str(bat)], creationflags=0x00000008)
+            extract_dir = tmp_dir / "extracted"
+            extract_dir.mkdir(exist_ok=True)
+            await asyncio.to_thread(subprocess.check_call, ["ditto", "-x", "-k", str(zip_path), str(extract_dir)])
+            new_app = next(extract_dir.rglob("*.app"), None)
+            if not new_app:
+                return web.json_response({"ok": False, "error": "Downloaded archive did not contain a .app bundle"}, status=500)
+
+            # Handle macOS App Translocation (read-only mount) or non-writable parent dirs
+            is_translocated = "/AppTranslocation/" in str(app_bundle)
+            if is_translocated or not os.access(app_bundle.parent, os.W_OK):
+                apps_dir = Path("/Applications")
+                if apps_dir.is_dir() and os.access(apps_dir, os.W_OK):
+                    target_app = apps_dir / new_app.name
+                else:
+                    user_apps = Path.home() / "Applications"
+                    user_apps.mkdir(parents=True, exist_ok=True)
+                    target_app = user_apps / new_app.name
+            else:
+                target_app = app_bundle
+
+            install_path = str(target_app)
+            log_path = "/tmp/loy_studio_update.log"
+            swap_sh = tmp_dir / "swap.sh"
+            swap_sh.write_text(
+                "#!/bin/sh\n"
+                f'LOG="{log_path}"\n'
+                f'OLD_PID="{cur_pid}"\n'
+                f'NEW_APP="{new_app}"\n'
+                f'TARGET="{target_app}"\n'
+                f'STAGE="{target_app}.new"\n'
+                f'BACKUP="{target_app}.old"\n'
+                f'TMP_DIR="{tmp_dir}"\n'
+                'echo "=== LOY Studio update started $(date) ===" > "$LOG"\n'
+                'echo "Installing $NEW_APP -> $TARGET (waiting for PID $OLD_PID)" >> "$LOG"\n'
+                'i=0\n'
+                'while kill -0 "$OLD_PID" 2>/dev/null && [ $i -lt 40 ]; do\n'
+                '  sleep 0.25\n'
+                '  i=$((i + 1))\n'
+                'done\n'
+                'sleep 0.4\n'
+                'rm -rf "$STAGE" "$BACKUP" >> "$LOG" 2>&1\n'
+                'if ! ditto "$NEW_APP" "$STAGE" >> "$LOG" 2>&1; then\n'
+                '  echo "ERROR: ditto failed" >> "$LOG"\n'
+                '  exit 1\n'
+                'fi\n'
+                'xattr -cr "$STAGE" >> "$LOG" 2>&1 || true\n'
+                'if [ -e "$TARGET" ]; then\n'
+                '  if ! mv "$TARGET" "$BACKUP" >> "$LOG" 2>&1; then\n'
+                '    echo "ERROR: could not move existing app to backup" >> "$LOG"\n'
+                '    rm -rf "$STAGE"\n'
+                '    exit 1\n'
+                '  fi\n'
+                'fi\n'
+                'if ! mv "$STAGE" "$TARGET" >> "$LOG" 2>&1; then\n'
+                '  echo "ERROR: could not move staged app into place; restoring backup" >> "$LOG"\n'
+                '  [ -e "$BACKUP" ] && mv "$BACKUP" "$TARGET" >> "$LOG" 2>&1\n'
+                '  exit 1\n'
+                'fi\n'
+                'rm -rf "$BACKUP" >> "$LOG" 2>&1 || true\n'
+                'echo "Launching $TARGET" >> "$LOG"\n'
+                'open -n "$TARGET" >> "$LOG" 2>&1 || open "$TARGET" >> "$LOG" 2>&1\n'
+                'rm -rf "$TMP_DIR" >> "$LOG" 2>&1 || true\n'
+                'echo "=== Update complete $(date) ===" >> "$LOG"\n',
+                encoding="utf-8",
+            )
+            swap_sh.chmod(0o755)
+            # Gracefully disconnect BLE right before launching the swap script and exiting
+            if state.transport and state.transport.is_connected:
+                try:
+                    await state.transport.disconnect()
+                except Exception:
+                    pass
+            subprocess.Popen(
+                ["/bin/sh", str(swap_sh)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        elif sys.platform == "win32":
+            import zipfile
+
+            exe_path = Path(sys.executable).resolve()
+            extract_dir = tmp_dir / "extracted"
+
+            def _extract_win() -> None:
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(extract_dir)
+
+            await asyncio.to_thread(_extract_win)
+            new_exe = next(extract_dir.rglob("*.exe"), None)
+            if not new_exe:
+                return web.json_response({"ok": False, "error": "Downloaded archive did not contain an .exe"}, status=500)
+
+            install_path = str(exe_path)
+            bat = tmp_dir / "swap.bat"
+            bat.write_text(
+                f"@echo off\r\n"
+                f"setlocal\r\n"
+                f":waitloop\r\n"
+                f"tasklist /FI \"PID eq {cur_pid}\" 2>nul | find \"{cur_pid}\" >nul\r\n"
+                f"if not errorlevel 1 (\r\n"
+                f"  timeout /t 1 /nobreak >nul\r\n"
+                f"  goto waitloop\r\n"
+                f")\r\n"
+                f"copy /y \"{new_exe}\" \"{exe_path}.new\" >nul\r\n"
+                f"if errorlevel 1 exit /b 1\r\n"
+                f"move /y \"{exe_path}.new\" \"{exe_path}\" >nul\r\n"
+                f"start \"\" \"{exe_path}\"\r\n"
+                f"rmdir /s /q \"{tmp_dir}\" >nul 2>&1\r\n",
+                encoding="utf-8",
+            )
+            if state.transport and state.transport.is_connected:
+                try:
+                    await state.transport.disconnect()
+                except Exception:
+                    pass
+            subprocess.Popen(
+                ["cmd", "/c", str(bat)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=0x00000008,
+            )
+        else:
+            return web.json_response({
+                "ok": True,
+                "mode": "browser",
+                "release_url": info["release_url"],
+                "message": "Auto-replace is supported on macOS & Windows; opened GitHub Release page.",
+            })
+    except Exception as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return web.json_response({"ok": False, "error": f"Install preparation failed: {exc}"}, status=500)
 
     # Exit shortly after returning HTTP 200 so the swap script replaces & relaunches cleanly
     asyncio.get_running_loop().call_later(0.6, lambda: os._exit(0))
-    return web.json_response({"ok": True, "restarting": True, "latest_version": info["latest_version"]})
+    return web.json_response({
+        "ok": True,
+        "restarting": True,
+        "latest_version": info["latest_version"],
+        "install_path": install_path,
+        "log_path": log_path,
+    })
 
 
 async def handle_calendars_list(req: web.Request) -> web.Response:
