@@ -10,7 +10,7 @@
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <title>LOY Studio — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=18" />
+  <link rel="stylesheet" href="/static/style.css?v=19" />
 </head>
 <body>
   <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
@@ -120,12 +120,14 @@
           <div class="home-hero">
             <div class="led-bezel">
               <canvas id="homePreview" width="64" height="64"></canvas>
+              <img id="homeLiveImg" class="hidden" alt="Live on LED display" style="width:100%;height:100%;image-rendering:pixelated;border-radius:10px;object-fit:contain;background:#000;" />
             </div>
             <div style="display:flex;flex-direction:column;gap:11px;min-width:0;">
               <div class="row" style="flex-wrap:nowrap;">
                 <div style="min-width:0;">
                   <h2 id="homeDevName" style="font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">No Display Connected</h2>
                   <p class="muted" id="homeDevMeta" style="font-size:11.5px;">Tap top pill to connect BLE</p>
+                  <div id="homeNowBadge" class="badge blue" style="margin-top:4px;font-size:11px;display:inline-flex;">Now: Ready</div>
                 </div>
                 <div class="inline" style="flex-wrap:nowrap;gap:5px;">
                   <button id="btnHomePowerOn" class="btn sm" title="Power On"><svg class="ico sm"><use href="#i-power"/></svg></button>
@@ -965,6 +967,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=18"></script>
+  <script src="/static/app.js?v=19"></script>
 </body>
 </html>

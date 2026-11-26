@@ -1297,6 +1297,37 @@
     $("homeBriSlider").value = st.brightness;
     $("homeBriVal").textContent = st.brightness;
     $("btnDevDisconnect").classList.toggle("hidden", !st.connected);
+
+    // Real-time multi-device sync: Now Playing preview, active tile, Auto-Cycle & shared history
+    const np = st.now_playing;
+    if (np && np.title) {
+      if ($("homeNowBadge")) {
+        const via = np.source ? ` · via ${np.source}` : "";
+        $("homeNowBadge").textContent = `Now: ${np.title}${via}`;
+      }
+      if ($("homeLiveImg") && $("homePreview")) {
+        if (np.preview_url) {
+          $("homeLiveImg").src = np.preview_url;
+          $("homeLiveImg").classList.remove("hidden");
+          $("homePreview").classList.add("hidden");
+        } else {
+          $("homeLiveImg").classList.add("hidden");
+          $("homePreview").classList.remove("hidden");
+        }
+      }
+      ["pinCalClock", "pinWxClock", "pinOnAir", "pinCoding"].forEach((id) => {
+        if ($(id)) $(id).classList.toggle("active", Boolean(np.active_pin && id === np.active_pin));
+      });
+    }
+    if (typeof st.auto_cycle_enabled === "boolean" && $("btnAutoCycle")) {
+      $("btnAutoCycle").classList.toggle("primary", st.auto_cycle_enabled);
+      $("btnAutoCycle").textContent = st.auto_cycle_enabled ? "🔄 Auto-Cycle: ON" : "🔄 Auto-Cycle";
+    }
+    if (Array.isArray(st.recent_sent) && st.recent_sent.length && $("homeRecent")) {
+      $("homeRecent").innerHTML = st.recent_sent
+        .map((r) => `<div style="padding:4px 0;border-bottom:1px solid var(--border);">${r.time} — <b>${r.title}</b> <span class="muted">(${r.source})</span></div>`)
+        .join("");
+    }
   }
 
   async function scanBle() {
@@ -2289,6 +2320,7 @@
       try {
         const msg = JSON.parse(ev.data);
         if (msg.event === "status_update") applyStatus(msg.data);
+        else if (msg.event === "smart_config_update") refreshSmartConfig();
         else if (msg.event === "clients_update") renderClientsList(msg.data);
         else if (msg.event === "library_update") loadLibrary();
         else if (msg.event === "schedule_update") loadWorkSchedule();

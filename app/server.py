@@ -21,6 +21,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Set
@@ -233,6 +234,15 @@ class ControllerState:
         self.device_info: Dict[str, Any] = {}
         self.packet_log: Deque[Dict[str, Any]] = deque(maxlen=200)
         self.recent_sent: Deque[Dict[str, Any]] = deque(maxlen=12)
+        self.now_playing: Dict[str, Any] = {
+            "kind": "idle",
+            "title": "Ready",
+            "subtitle": "Pick a mode, clock, or artwork",
+            "active_pin": "",
+            "preview_url": "",
+            "source": "",
+            "ts": 0.0,
+        }
         self.lock = asyncio.Lock()
         self.ws_clients: Dict[web.WebSocketResponse, Dict[str, Any]] = {}
         self.pairing_token: str = _load_or_create_token()
@@ -307,7 +317,33 @@ class ControllerState:
             lambda prog: self.broadcast_soon("transfer_update", prog.to_dict())
         )
 
+    def set_now_playing(
+        self,
+        kind: str,
+        title: str,
+        *,
+        subtitle: str = "",
+        active_pin: str = "",
+        preview_url: str = "",
+        source: str = "App",
+        record: bool = True,
+    ) -> None:
+        self.now_playing = {
+            "kind": kind,
+            "title": title,
+            "subtitle": subtitle,
+            "active_pin": active_pin,
+            "preview_url": preview_url,
+            "source": source,
+            "ts": round(time.time(), 1),
+        }
+        if record:
+            tstr = datetime.datetime.now().strftime("%H:%M:%S")
+            self.recent_sent.appendleft({"time": tstr, "title": title, "source": source})
+        self.broadcast_soon("status_update", self.status_dict())
+
     def status_dict(self) -> Dict[str, Any]:
+        cfg = _load_smart_config() if SMART_CONFIG_FILE.exists() else DEFAULT_SMART_CONFIG
         return {
             "connected": bool(self.transport and self.transport.is_connected),
             "mode": self.mode,
@@ -320,7 +356,30 @@ class ControllerState:
             "rotation": self.rotation,
             "mirror": self.mirror,
             "device_info": self.device_info,
+            "now_playing": self.now_playing,
+            "recent_sent": list(self.recent_sent),
+            "auto_cycle_enabled": bool(cfg.get("auto_cycle_enabled", False)),
         }
+
+
+def _detect_req_source(req: Optional[web.Request]) -> str:
+    if req is None:
+        return "Auto"
+    hdr = (req.headers.get("X-LOY-Source") or "").strip()
+    if hdr:
+        return hdr[:20]
+    ua = (req.headers.get("User-Agent") or "").lower()
+    if "iphone" in ua or "ipad" in ua:
+        return "iPhone"
+    if "android" in ua:
+        return "Android"
+    if "python-urllib" in ua:
+        return "Menu Bar"
+    if "node" in ua or "undici" in ua:
+        return "Google Home"
+    if _is_loopback(req.remote):
+        return "Mac"
+    return "Wi-Fi"
 
 
 state = ControllerState()
@@ -1262,12 +1321,16 @@ async def handle_gif_pack_send(req: web.Request) -> web.Response:
     if not state.transport or not state.transport.is_connected:
         return web.json_response({"error": "Not connected to display"}, status=400)
     body = await req.json()
-    filename = Path(body["file"]).name
+    raw_name = body.get("file") or body.get("filename") or ""
+    if not raw_name:
+        return web.json_response({"error": "Missing file/filename"}, status=400)
+    filename = Path(str(raw_name)).name
     gif_path = GIFS_DIR / filename
     if not gif_path.is_file():
         return web.json_response({"error": f"GIF not found: {filename}"}, status=404)
     raw = gif_path.read_bytes()
     slot = int(body.get("slot", 1))
+    src = _detect_req_source(req)
     async with state.lock:
         try:
             await _ensure_exit_modal_mode()
@@ -1275,6 +1338,13 @@ async def handle_gif_pack_send(req: web.Request) -> web.Response:
                 raw, state.width, state.height, program_id=slot, start_sno=state.transport.next_sno()
             )
             res = await state.transport.send_frames(wire_frames, label=f"GIF: {filename}")
+            await state.transport.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=state.transport.next_sno()))
+            pretty = filename.rsplit(".", 1)[0].replace("_", " ").title()
+            pin = "pinOnAir" if "on_air" in filename else ("pinCoding" if "coding" in filename else "")
+            state.set_now_playing(
+                "gif", pretty, subtitle=f"64×64 Animated Mode · via {src}",
+                active_pin=pin, preview_url=f"/gifs/{filename}", source=src,
+            )
             return web.json_response({"ok": True, "file": filename, "wire_frames": len(wire_frames), "last_ack": res[-1]})
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
@@ -1617,6 +1687,15 @@ async def handle_hw_text_clock(req: web.Request) -> web.Response:
                 )
             res = await state.transport.send_frames(wire_frames, label=f"Clock: {shape}")
             await state.transport.send_frame(cmd_pgm_play(model=1, index=(slot - 1) & 0xFF, sno=state.transport.next_sno()))
+            src = _detect_req_source(req)
+            col_q = urllib.parse.quote(body.get("color", "#05d9e8"))
+            acc_q = urllib.parse.quote(body.get("accent", "#ff2a6d"))
+            state.set_now_playing(
+                "clock", shape.replace("hw_", "").replace("_", " ").title() + " Clock",
+                subtitle=f"Hardware RTC · via {src}",
+                preview_url=f"/api/hw_clock_preview/{shape}?color={col_q}&accent={acc_q}",
+                source=src,
+            )
             return web.json_response({"ok": True, "shape": shape, "wire_frames": len(wire_frames), "last_ack": res[-1]})
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
@@ -2602,7 +2681,7 @@ async def handle_hydration_now(req: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=500)
 
 
-async def _upload_weather_clock(city: str) -> Dict[str, Any]:
+async def _upload_weather_clock(city: str, source: str = "App") -> Dict[str, Any]:
     if not state.transport or not state.transport.is_connected:
         raise RuntimeError("Not connected to display")
     wx = await asyncio.to_thread(fetch_open_meteo_weather, city)
@@ -2622,10 +2701,16 @@ async def _upload_weather_clock(city: str) -> Dict[str, Any]:
         )
         res = await t.send_frames(wire_frames, label=f"Weather: {wx['city']} {wx['temp_c']}C")
         await t.send_frame(cmd_pgm_play(model=1, index=0, sno=t.next_sno()))
+    b64_prev = "data:image/gif;base64," + base64.b64encode(bg_gif).decode("ascii")
+    state.set_now_playing(
+        "clock", f"Weather Clock · {wx['city']} {wx['temp_c']}°C",
+        subtitle=f"{wx['kind'].replace('_', ' ').title()} · via {source}",
+        active_pin="pinWxClock", preview_url=b64_prev, source=source,
+    )
     return {"ok": True, "weather": wx, "wire_frames": len(wire_frames), "last_ack": res[-1]}
 
 
-async def _upload_calendar_clock(ics_url: str = "", calendar_name: str = "") -> Dict[str, Any]:
+async def _upload_calendar_clock(ics_url: str = "", calendar_name: str = "", source: str = "App") -> Dict[str, Any]:
     if not state.transport or not state.transport.is_connected:
         raise RuntimeError("Not connected to display")
     ev = await asyncio.to_thread(get_upcoming_calendar_event, 480, ics_url, calendar_name)
@@ -2645,6 +2730,12 @@ async def _upload_calendar_clock(ics_url: str = "", calendar_name: str = "") -> 
         lbl = f"Cal: {ev['title']} ({ev['minutes_left']}m)" if ev else "Cal Clock: Free"
         res = await t.send_frames(wire_frames, label=lbl)
         await t.send_frame(cmd_pgm_play(model=1, index=0, sno=t.next_sno()))
+    b64_prev = "data:image/gif;base64," + base64.b64encode(bg_gif).decode("ascii")
+    sub = f"Next: {ev['title']} in {ev['minutes_left']}m · via {source}" if ev else f"No meetings today · via {source}"
+    state.set_now_playing(
+        "clock", "Workday Calendar Clock",
+        subtitle=sub, active_pin="pinCalClock", preview_url=b64_prev, source=source,
+    )
     return {"ok": True, "event": ev, "wire_frames": len(wire_frames), "last_ack": res[-1]}
 
 
@@ -2663,7 +2754,7 @@ async def handle_calendar_clock(req: web.Request) -> web.Response:
     if changed:
         _save_smart_config(cfg)
     try:
-        res = await _upload_calendar_clock(ics_url, cal_name)
+        res = await _upload_calendar_clock(ics_url, cal_name, source=_detect_req_source(req))
         return web.json_response(res)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -2675,6 +2766,7 @@ async def handle_auto_cycle(req: web.Request) -> web.Response:
     enabled = bool(body.get("enabled")) if "enabled" in body else not bool(cfg.get("auto_cycle_enabled"))
     cfg["auto_cycle_enabled"] = enabled
     _save_smart_config(cfg)
+    state.broadcast_soon("status_update", state.status_dict())
     return web.json_response({"ok": True, "auto_cycle_enabled": enabled})
 
 
@@ -2693,7 +2785,7 @@ async def handle_weather_clock(req: web.Request) -> web.Response:
         cfg["weather_city"] = city
         _save_smart_config(cfg)
     try:
-        res = await _upload_weather_clock(city)
+        res = await _upload_weather_clock(city, source=_detect_req_source(req))
         return web.json_response(res)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -2724,6 +2816,8 @@ async def handle_smart_config(req: web.Request) -> web.Response:
         if k in body:
             cfg[k] = body[k]
     _save_smart_config(cfg)
+    state.broadcast_soon("smart_config_update", cfg)
+    state.broadcast_soon("status_update", state.status_dict())
     return web.json_response({"ok": True, "config": cfg})
 
 
