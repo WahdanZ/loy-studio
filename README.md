@@ -73,9 +73,9 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 | **Bluetooth LE Transport** | **Bleak** (macOS CoreBluetooth) with reliable ACK-paced streaming & auto-reconnect |
 | **Graphics & Media Engine** | **Pillow (PIL)** for `64×64` rendering, clock compositing, quantization & GIF encoding; optional **FFmpeg** for video import |
 | **Frontend UI / PWA** | Vanilla **HTML5 / CSS3 / JavaScript** (zero build step), Canvas 2D LED simulator, Service Worker PWA |
-| **Portable Desktop Apps** | **Python (`pywebview` + PyInstaller)** & **Standalone Pure Flutter (Dart + `universal_ble`)** |
+| **Portable Desktop App** | **Python (`pywebview` + PyInstaller)** self-contained `.app` (macOS) & `.exe` (Windows) |
 | **Smart Home Bridge** | **Matter** (`@matter/main` + Node.js) for native local Google Home / Nest Hub control |
-| **CI/CD Releases** | **GitHub Actions** automated testing & portable builds for macOS & Windows (Python + Flutter) |
+| **CI/CD Releases** | **GitHub Actions** automated testing & portable builds for macOS & Windows |
 | **macOS Integration** | **rumps** Menu Bar app + `launchd` service (`macos/loy_ctl.sh`) |
 | **Testing** | **pytest** automated protocol & framing test suite |
 
@@ -86,14 +86,13 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 ```text
 .
 ├── app/                # Python BLE gateway, creative engine, smart desk automation & PWA UI
-├── flutter_app/        # Standalone Pure Flutter (Dart-only Desktop + BLE + HTTP Host) app
 ├── protocol/           # BLE framing, codecs, display commands & transport layer
 ├── gifs/               # 18 built-in 64×64 pixel-art & Work Mode animated GIFs
 ├── matter/             # Local Matter bridge for Google Home / Nest Hub voice & tile control
 ├── macos/              # macOS Menu Bar app, launchd plist template & loy_ctl.sh helper
-├── desktop_app.py      # Portable Python desktop launcher (pywebview)
+├── desktop_app.py      # Portable desktop launcher (pywebview)
 ├── build_portable.py   # PyInstaller builder for macOS (.app) & Windows (.exe)
-├── .github/workflows/  # Automated CI/CD Release Pipeline (Python + Flutter for macOS & Windows)
+├── .github/workflows/  # Automated CI/CD Release Pipeline (macOS & Windows)
 ├── poc/                # Command-line controller (loy_cli.py)
 ├── tools/              # Pixel-art GIF generators & utility scripts
 ├── docs/screenshots/   # Desktop & mobile UI screenshots

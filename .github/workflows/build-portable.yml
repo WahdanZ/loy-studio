@@ -1,4 +1,4 @@
-name: CI & Release Pipeline (Python + Flutter)
+name: CI & Portable Release Pipeline
 
 on:
   workflow_dispatch:
@@ -12,8 +12,8 @@ permissions:
   contents: write
 
 jobs:
-  test-python:
-    name: Test Python (Protocol, JS & Syntax)
+  test:
+    name: Verify Protocol, JS & Syntax
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,30 +27,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
-      - name: Run Python protocol tests & checks
+      - name: Run protocol tests & checks
         run: |
           pytest -q tests/test_protocol.py
           node --check app/static/app.js
           python -m py_compile app/server.py app/smart_features.py desktop_app.py
 
-  test-flutter:
-    name: Test Flutter (Analyze & Pure Dart Protocol)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: flutter_app
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-      - run: flutter pub get
-      - run: flutter analyze --no-fatal-infos
-      - run: flutter test
-
-  build-python:
-    name: Build Python Portable (${{ matrix.label }})
-    needs: test-python
+  build:
+    name: Build Portable (${{ matrix.label }})
+    needs: test
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
@@ -58,90 +43,45 @@ jobs:
         include:
           - label: macOS-arm64
             os: macos-latest
-            artifact: LOY-Studio-Python-macOS-arm64
+            artifact: LOY-Studio-macOS-arm64
           - label: Windows-x64
             os: windows-latest
-            artifact: LOY-Studio-Python-Windows-x64
+            artifact: LOY-Studio-Windows-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install Python build dependencies
+      - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pywebview
-      - name: Build Python portable app
+      - name: Build portable app
         run: python build_portable.py
-      - name: Package Python macOS zip
+      - name: Package macOS portable zip
         if: runner.os == 'macOS'
         run: |
           cd dist
-          ditto -c -k --sequesterRsrc --keepParent "LOY Studio.app" "LOY-Studio-Python-macOS-arm64.zip"
-      - name: Package Python Windows zip
+          ditto -c -k --sequesterRsrc --keepParent "LOY Studio.app" "LOY-Studio-macOS-arm64.zip"
+      - name: Package Windows portable zip
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist\LOY Studio.exe" -DestinationPath "dist\LOY-Studio-Python-Windows-x64.zip" -Force
-      - name: Upload Python artifact
+          Compress-Archive -Path "dist\LOY Studio.exe" -DestinationPath "dist\LOY-Studio-Windows-x64.zip" -Force
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: dist/*.zip
 
-  build-flutter:
-    name: Build Flutter Standalone (${{ matrix.label }})
-    needs: test-flutter
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: macOS
-            os: macos-latest
-            cmd: flutter build macos --release
-            artifact: LOY-Studio-Flutter-macOS
-          - label: Windows
-            os: windows-latest
-            cmd: flutter build windows --release
-            artifact: LOY-Studio-Flutter-Windows
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: flutter_app
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-      - run: flutter pub get
-      - run: ${{ matrix.cmd }}
-      - name: Package Flutter macOS zip
-        if: runner.os == 'macOS'
-        run: |
-          cd build/macos/Build/Products/Release
-          ditto -c -k --sequesterRsrc --keepParent "loy_studio_flutter.app" "LOY-Studio-Flutter-macOS.zip"
-      - name: Package Flutter Windows zip
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "LOY-Studio-Flutter-Windows.zip" -Force
-      - name: Upload Flutter artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: |
-            flutter_app/build/macos/Build/Products/Release/*.zip
-            flutter_app/*.zip
-
   release:
-    name: Publish GitHub Release (Python + Flutter)
-    needs: [build-python, build-flutter]
+    name: Publish GitHub Release
+    needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - name: Download all Python & Flutter artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-assets
