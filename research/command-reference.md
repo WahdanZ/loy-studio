@@ -22,9 +22,9 @@ Every command below is **VERIFIED STATIC** from `app-service.js` modules `a829` 
 | Built-in Games (`game`) | SET (`2`) | `0x30` (48) | `<opt: 37=L,38=U,39=R,40=D,115=start,112=pause,100=done,101=exit \| id+128>` | `a829:694-695, 1129-1134` | VERIFIED STATIC / UNTESTED |
 | Delete All Programs | SET (`2`) | `0x08` (8) | `00 FF` | `a829:969` | VERIFIED STATIC / UNTESTED |
 | Delete Specific Programs | SET (`2`) | `0x08` (8) | `00 <id1-1> <id2-1> ...` | `a829:972-993` | VERIFIED STATIC / UNTESTED |
-| Format Flash | SET (`2`) | `0x08` (8) | `03` (DO NOT USE casually) | `a829:968` | VERIFIED STATIC / UNTESTED |
-| Switch Program (`dispatch`) | SET (`2`) | `0x18` (24) | `02 <id_pro-1> <ignore_cmd> <mode> [val u16LE]` | `a829:1047-1067` | VERIFIED STATIC / UNTESTED |
-| Playlist Play (`pgm_play`) | SET (`2`) | `0x36` (54) | `<model> <index> [id_pro-1 ...]` | `a829:806-816` | VERIFIED STATIC / UNTESTED |
+| Format Flash | SET (`2`) | `0x08` (8) | `03` (erases all stored programs) | `a829:968` | VERIFIED RUNTIME (EXYC-A V2.8.7, 2026-11-26): ACK ok, resets a scrambled program list; built-in logo survives |
+| Switch Program (`dispatch`) | SET (`2`) | `0x18` (24) | `02 <id_pro-1> <ignore_cmd> <mode> [val u16LE]` | `a829:1047-1067` | VERIFIED RUNTIME: switches by program id but only temporarily; panel falls back to the `pgm_play` selection |
+| Playlist Play (`pgm_play`) | SET (`2`) | `0x36` (54) | `<model> <index> [id_pro-1 ...]` | `a829:806-816` | VERIFIED RUNTIME: `model=1` plays the `index`-th entry of the internal program LIST (position, not id); `model=2` is NACKed |
 | Upload Image / GIF / Text Program | SET (`2`) | `0x19/0x09/0x0C/0x1C/0x0D/0x1D` + `0x14/0x11` + `0x12/0x13` chunks | See `protocol-specification.md` & `image-format.md` | `a829:114-142, 481-622` | VERIFIED STATIC / UNTESTED |
 | BLE Password (`pwd`) | SET (`2`) | `0x37` (55) | `<type 0..3> [ascii_pwd]` | `a829:1262-1270` | VERIFIED STATIC / UNTESTED |
 
