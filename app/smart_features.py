@@ -18,6 +18,7 @@ import io
 import json
 import math
 import re
+import ssl
 import subprocess
 import sys
 import time
@@ -353,11 +354,28 @@ def render_hydration_gif(size: int = 64) -> bytes:
 # 3. Opt-In Keyless Open-Meteo Weather + Animated Pixel Weather Clock BG
 # ---------------------------------------------------------------------------
 
+def _build_ssl_context() -> ssl.SSLContext:
+    """Use OS native trust store (macOS Keychain / Windows Cert Store, including corporate CAs) or bundled certifi."""
+    try:
+        import truststore  # type: ignore
+
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception:
+        pass
+    try:
+        import certifi  # type: ignore
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 def fetch_open_meteo_weather(city: str) -> Dict[str, Any]:
     """Fetch current temperature & WMO weather code from keyless Open-Meteo API."""
+    ctx = _build_ssl_context()
     q = urllib.parse.quote(city.strip() or "Berlin")
     geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={q}&count=1&language=en&format=json"
-    with urllib.request.urlopen(geo_url, timeout=6) as r:
+    with urllib.request.urlopen(geo_url, timeout=6, context=ctx) as r:
         geo = json.loads(r.read().decode("utf-8"))
     results = geo.get("results") or []
     if not results:
@@ -367,7 +385,7 @@ def fetch_open_meteo_weather(city: str) -> Dict[str, Any]:
     name = loc.get("name", city)
 
     wx_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code,is_day"
-    with urllib.request.urlopen(wx_url, timeout=6) as r:
+    with urllib.request.urlopen(wx_url, timeout=6, context=ctx) as r:
         wx = json.loads(r.read().decode("utf-8"))
     cur = wx.get("current") or {}
     code = int(cur.get("weather_code", 0))

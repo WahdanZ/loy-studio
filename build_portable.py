@@ -32,6 +32,12 @@ cmd = [
     "PIL",
     "--hidden-import",
     "qrcode",
+    "--hidden-import",
+    "truststore",
+    "--hidden-import",
+    "certifi",
+    "--collect-data",
+    "certifi",
 ]
 
 if sys.platform == "win32":
