@@ -1981,7 +1981,20 @@
 
   async function refreshSmartConfig() {
     try {
-      const { config, context, active_override, weather_cache } = await api("/api/smart_config");
+      const { config, context, calendars, active_override, weather_cache } = await api("/api/smart_config");
+      if ($("ctxCalName") && Array.isArray(calendars)) {
+        const cur = config.calendar_name || "";
+        const sel = $("ctxCalName");
+        sel.innerHTML = `<option value="">All macOS Calendars</option>`;
+        calendars.forEach((c) => {
+          const opt = document.createElement("option");
+          const label = c.source ? `${c.source} · ${c.title}` : c.title;
+          opt.value = c.id || label;
+          opt.textContent = label;
+          sel.appendChild(opt);
+        });
+        sel.value = cur;
+      }
       if ($("ctxEnabled")) {
         $("ctxEnabled").checked = Boolean(config.context_enabled);
         $("ctxOnAir").checked = Boolean(config.auto_on_air);
@@ -2024,6 +2037,7 @@
           idle_minutes: Number($("ctxIdleMin").value) || 5,
           calendar_alerts: $("ctxCal").checked,
           calendar_clock_enabled: Boolean($("ctxCalClock")?.checked),
+          calendar_name: ($("ctxCalName")?.value || "").trim(),
           calendar_ics_url: ($("ctxCalIcs")?.value || "").trim(),
           weather_enabled: $("wxAuto").checked,
           weather_city: $("wxCity").value.trim() || "Berlin",
@@ -2036,12 +2050,22 @@
     } catch (err) { toast(err.message); }
   }
 
-  ["ctxEnabled", "ctxOnAir", "ctxCoding", "ctxIdle", "ctxIdleMin", "ctxCal", "ctxCalClock", "ctxCalIcs", "wxAuto", "hydEnabled", "hydMin"].forEach((id) => {
+  ["ctxEnabled", "ctxOnAir", "ctxCoding", "ctxIdle", "ctxIdleMin", "ctxCal", "ctxCalClock", "ctxCalName", "ctxCalIcs", "wxAuto", "hydEnabled", "hydMin"].forEach((id) => {
     if ($(id)) $(id).onchange = saveSmartConfig;
   });
+  if ($("btnCalRefresh")) $("btnCalRefresh").onclick = async () => {
+    await refreshSmartConfig();
+    toast("Refreshed macOS calendars");
+  };
   if ($("btnCalClockSend")) $("btnCalClockSend").onclick = async () => {
     try {
-      const res = await api("/api/calendar_clock", { method: "POST", body: JSON.stringify({ ics_url: ($("ctxCalIcs")?.value || "").trim() }) });
+      const res = await api("/api/calendar_clock", {
+        method: "POST",
+        body: JSON.stringify({
+          calendar_name: ($("ctxCalName")?.value || "").trim(),
+          ics_url: ($("ctxCalIcs")?.value || "").trim(),
+        }),
+      });
       const ev = res.event;
       if ($("ctxCalReadout")) $("ctxCalReadout").textContent = ev ? `Live: ${ev.title} in ${ev.minutes_left}m` : "Live: No meetings today (Free)";
       toast(ev ? `Calendar Clock sent: ${ev.title} (${ev.minutes_left}m)` : "Calendar Clock sent (No upcoming meetings)");

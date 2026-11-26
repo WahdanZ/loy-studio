@@ -10,7 +10,7 @@
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <title>LOY Studio — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=15" />
+  <link rel="stylesheet" href="/static/style.css?v=16" />
 </head>
 <body>
   <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
@@ -686,7 +686,13 @@
             <label class="inline muted" style="gap:8px;"><input id="ctxIdle" type="checkbox" checked /> Auto BRB after <input id="ctxIdleMin" type="number" min="1" max="60" value="5" style="width:48px;" />m idle</label>
             <label class="inline muted" style="gap:8px;"><input id="ctxCal" type="checkbox" /> Calendar 5m Meeting Alert</label>
             <label class="inline muted" style="gap:8px;"><input id="ctxCalClock" type="checkbox" /> Workday Clock + Next Meeting (Mon–Fri)</label>
-            <div id="ctxCalReadout" class="muted" style="font-size:11.5px;">Calendar: uses macOS EventKit or .ics URL below</div>
+            <div class="inline">
+              <select id="ctxCalName" style="flex:1;">
+                <option value="">All macOS Calendars</option>
+              </select>
+              <button id="btnCalRefresh" class="btn sm icon-btn" title="Refresh macOS Calendars"><svg class="ico sm"><use href="#i-refresh"/></svg></button>
+            </div>
+            <div id="ctxCalReadout" class="muted" style="font-size:11.5px;">Calendar: pick a macOS calendar above or paste .ics URL</div>
             <div class="inline">
               <input id="ctxCalIcs" type="text" placeholder="Optional Google / Outlook .ics URL" style="flex:1;" />
               <button id="btnCalClockSend" class="btn sm primary"><svg class="ico sm"><use href="#i-send"/></svg> Clock</button>
@@ -917,6 +923,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=15"></script>
+  <script src="/static/app.js?v=16"></script>
 </body>
 </html>

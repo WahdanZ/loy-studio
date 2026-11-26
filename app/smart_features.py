@@ -235,15 +235,70 @@ def _fetch_upcoming_ics_event(ics_url: str, within_minutes: int = 120) -> Option
     return {"title": best[1], "minutes_left": best[0], "source": "ics"}
 
 
-def _get_macos_eventkit_event(within_minutes: int = 120) -> Optional[Dict[str, Any]]:
-    """Fast native macOS EventKit query via JXA (handles recurring meetings & all synced accounts)."""
+def list_macos_calendars() -> List[Dict[str, str]]:
+    """List all macOS EventKit calendars with their account/source (e.g. Exchange, iCloud, On My Mac)."""
+    if sys.platform != "darwin":
+        return []
+    jxa = '''
+ObjC.import("EventKit");
+ObjC.import("Foundation");
+var store = $.EKEventStore.alloc.init;
+var cals = store.calendarsForEntityType(0);
+var out = [];
+if (cals && cals.count > 0) {
+  for (var i = 0; i < cals.count; i++) {
+    var c = cals.objectAtIndex(i);
+    var cid = ObjC.unwrap(c.calendarIdentifier) || "";
+    var title = ObjC.unwrap(c.title) || "Calendar";
+    var src = c.source ? (ObjC.unwrap(c.source.title) || "") : "";
+    out.push({ id: cid, title: title, source: src });
+  }
+}
+JSON.stringify(out);
+'''
+    try:
+        raw = subprocess.check_output(
+            ["osascript", "-l", "JavaScript", "-e", jxa],
+            text=True, stderr=subprocess.DEVNULL, timeout=4.0,
+        ).strip()
+        if raw:
+            items = json.loads(raw)
+            if isinstance(items, list):
+                return items
+    except Exception:
+        pass
+    return []
+
+
+def _get_macos_eventkit_event(within_minutes: int = 120, calendar_name: str = "") -> Optional[Dict[str, Any]]:
+    """Fast native macOS EventKit query via JXA (handles recurring meetings & optional calendar filter)."""
+    cal_filter_json = json.dumps(calendar_name.strip())
     jxa = f'''
 ObjC.import("EventKit");
 ObjC.import("Foundation");
 var store = $.EKEventStore.alloc.init;
+var filterVal = {cal_filter_json};
+var calList = $();
+if (filterVal) {{
+  var allCals = store.calendarsForEntityType(0);
+  var matched = $.NSMutableArray.alloc.init;
+  if (allCals && allCals.count > 0) {{
+    for (var j = 0; j < allCals.count; j++) {{
+      var c = allCals.objectAtIndex(j);
+      var cid = ObjC.unwrap(c.calendarIdentifier) || "";
+      var ctitle = ObjC.unwrap(c.title) || "";
+      var csrc = c.source ? (ObjC.unwrap(c.source.title) || "") : "";
+      var label = csrc ? (csrc + " · " + ctitle) : ctitle;
+      if (cid === filterVal || ctitle === filterVal || label === filterVal) {{
+        matched.addObject(c);
+      }}
+    }}
+  }}
+  calList = matched;
+}}
 var now = $.NSDate.date;
 var end = now.dateByAddingTimeInterval({int(within_minutes) * 60});
-var pred = store.predicateForEventsWithStartDateEndDateCalendars(now, end, $());
+var pred = store.predicateForEventsWithStartDateEndDateCalendars(now, end, calList);
 var evs = store.eventsMatchingPredicate(pred);
 var bestMins = 999999;
 var bestTitle = "";
@@ -276,10 +331,10 @@ bestTitle ? (bestTitle + "||" + bestMins) : "";
     return None
 
 
-def get_upcoming_calendar_event(within_minutes: int = 120, ics_url: str = "") -> Optional[Dict[str, Any]]:
+def get_upcoming_calendar_event(within_minutes: int = 120, ics_url: str = "", calendar_name: str = "") -> Optional[Dict[str, Any]]:
     """Query ICS feed (if configured) or native macOS EventKit/Calendar for upcoming meetings (cached 45s)."""
     now = time.time()
-    cache_key = f"{ics_url.strip()}|{within_minutes}"
+    cache_key = f"{ics_url.strip()}|{calendar_name.strip()}|{within_minutes}"
     if _cal_cache["key"] == cache_key and (now - _cal_cache["ts"] < 45):
         return _cal_cache["event"]
 
@@ -290,8 +345,8 @@ def get_upcoming_calendar_event(within_minutes: int = 120, ics_url: str = "") ->
         except Exception:
             event = None
     elif sys.platform == "darwin":
-        event = _get_macos_eventkit_event(within_minutes=within_minutes)
-        if event is None:
+        event = _get_macos_eventkit_event(within_minutes=within_minutes, calendar_name=calendar_name)
+        if event is None and not calendar_name.strip():
             # Fallback to AppleScript Calendar.app
             script = f'''
             set nowDate to current date
@@ -345,8 +400,8 @@ def _get_windows_context() -> Tuple[str, int]:
         return "", 0
 
 
-def detect_mac_context(*, check_calendar: bool = False, ics_url: str = "") -> Dict[str, Any]:
-    next_event = get_upcoming_calendar_event(120, ics_url=ics_url) if check_calendar else None
+def detect_mac_context(*, check_calendar: bool = False, ics_url: str = "", calendar_name: str = "") -> Dict[str, Any]:
+    next_event = get_upcoming_calendar_event(120, ics_url=ics_url, calendar_name=calendar_name) if check_calendar else None
     if sys.platform == "win32":
         front_app, idle_s = _get_windows_context()
         front_lower = front_app.lower()
