@@ -136,7 +136,8 @@ SCHEDULE_FILE = DATA_DIR / "work_schedule.json"
 SMART_CONFIG_FILE = DATA_DIR / "smart_config.json"
 LAN_AUTH_FILE = DATA_DIR / ".lan_auth.json"
 GH_TOKEN_FILE = DATA_DIR / ".github_token"
-APP_VERSION = "4.3.0"
+NOW_PLAYING_FILE = DATA_DIR / ".now_playing.json"
+APP_VERSION = "4.3.1"
 GITHUB_REPO = "WahdanZ/loy-studio"
 
 
@@ -250,9 +251,11 @@ class ControllerState:
             "subtitle": "Pick a mode, clock, or artwork",
             "active_pin": "",
             "preview_url": "",
+            "overlay_clock": False,
             "source": "",
             "ts": 0.0,
         }
+        self._load_now_playing()
         self.lock = asyncio.Lock()
         self.ws_clients: Dict[web.WebSocketResponse, Dict[str, Any]] = {}
         self.pairing_token: str = _load_or_create_token()
@@ -327,6 +330,15 @@ class ControllerState:
             lambda prog: self.broadcast_soon("transfer_update", prog.to_dict())
         )
 
+    def _load_now_playing(self) -> None:
+        if NOW_PLAYING_FILE.exists():
+            try:
+                d = json.loads(NOW_PLAYING_FILE.read_text(encoding="utf-8"))
+                if isinstance(d, dict) and d.get("title"):
+                    self.now_playing.update(d)
+            except Exception:
+                pass
+
     def set_now_playing(
         self,
         kind: str,
@@ -335,6 +347,7 @@ class ControllerState:
         subtitle: str = "",
         active_pin: str = "",
         preview_url: str = "",
+        overlay_clock: bool = False,
         source: str = "App",
         record: bool = True,
     ) -> None:
@@ -344,9 +357,14 @@ class ControllerState:
             "subtitle": subtitle,
             "active_pin": active_pin,
             "preview_url": preview_url,
+            "overlay_clock": overlay_clock,
             "source": source,
             "ts": round(time.time(), 1),
         }
+        try:
+            NOW_PLAYING_FILE.write_text(json.dumps(self.now_playing), encoding="utf-8")
+        except Exception:
+            pass
         if record:
             tstr = datetime.datetime.now().strftime("%H:%M:%S")
             self.recent_sent.appendleft({"time": tstr, "title": title, "source": source})
@@ -878,6 +896,17 @@ async def handle_upload_frames(req: web.Request) -> web.Response:
         try:
             await _ensure_exit_modal_mode()
             res = await state.transport.send_frames(wire_frames)
+            try:
+                pbuf = io.BytesIO()
+                Image.frombytes("RGB", (width, height), frames_rgb[0]).save(pbuf, format="PNG")
+                prev_uri = "data:image/png;base64," + base64.b64encode(pbuf.getvalue()).decode("ascii")
+            except Exception:
+                prev_uri = ""
+            src = _detect_req_source(req)
+            state.set_now_playing(
+                "canvas", f"Custom Pixel Art ({len(frames_rgb)}f)",
+                subtitle=f"64×64 Canvas · via {src}", preview_url=prev_uri, source=src,
+            )
             return web.json_response(
                 {"ok": True, "ystp_bytes": len(ystp), "wire_frames": len(wire_frames), "last_ack": res[-1]}
             )
@@ -1270,6 +1299,13 @@ async def handle_export_gif(req: web.Request) -> web.Response:
                 start_sno=state.transport.next_sno(),
             )
             res = await state.transport.send_frames(wire_frames)
+            src = _detect_req_source(req)
+            state.set_now_playing(
+                "canvas", f"Custom Animation ({len(frames_rgb)}f)",
+                subtitle=f"64×64 GIF · via {src}",
+                preview_url="data:image/gif;base64," + resp_payload["gif_b64"],
+                source=src,
+            )
             resp_payload["wire_frames"] = len(wire_frames)
             resp_payload["last_ack"] = res[-1]
     return web.json_response(resp_payload)
@@ -2819,7 +2855,7 @@ async def _upload_weather_clock(city: str, source: str = "App") -> Dict[str, Any
     state.set_now_playing(
         "clock", f"Weather Clock · {wx['city']} {wx['temp_c']}°C",
         subtitle=f"{wx['kind'].replace('_', ' ').title()} · via {source}",
-        active_pin="pinWxClock", preview_url=b64_prev, source=source,
+        active_pin="pinWxClock", preview_url=b64_prev, overlay_clock=True, source=source,
     )
     return {"ok": True, "weather": wx, "wire_frames": len(wire_frames), "last_ack": res[-1]}
 
@@ -2848,7 +2884,7 @@ async def _upload_calendar_clock(ics_url: str = "", calendar_name: str = "", sou
     sub = f"Next: {ev['title']} in {ev['minutes_left']}m · via {source}" if ev else f"No meetings today · via {source}"
     state.set_now_playing(
         "clock", "Workday Calendar Clock",
-        subtitle=sub, active_pin="pinCalClock", preview_url=b64_prev, source=source,
+        subtitle=sub, active_pin="pinCalClock", preview_url=b64_prev, overlay_clock=True, source=source,
     )
     return {"ok": True, "event": ev, "wire_frames": len(wire_frames), "last_ack": res[-1]}
 

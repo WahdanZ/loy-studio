@@ -1298,7 +1298,8 @@
     $("homeBriVal").textContent = st.brightness;
     $("btnDevDisconnect").classList.toggle("hidden", !st.connected);
 
-    // Real-time multi-device sync: Now Playing preview, active tile, Auto-Cycle & shared history
+    // Real-time multi-device sync: Now Playing preview, live RTC clock overlay, active tile, Auto-Cycle & shared history
+    if ($("homeBezel")) $("homeBezel").classList.toggle("power-off", st.power_on === false);
     const np = st.now_playing;
     if (np && np.title) {
       if ($("homeNowBadge")) {
@@ -1314,6 +1315,9 @@
           $("homeLiveImg").classList.add("hidden");
           $("homePreview").classList.remove("hidden");
         }
+      }
+      if ($("homeLiveClockOverlay")) {
+        $("homeLiveClockOverlay").classList.toggle("hidden", !np.overlay_clock);
       }
       ["pinCalClock", "pinWxClock", "pinOnAir", "pinCoding"].forEach((id) => {
         if ($(id)) $(id).classList.toggle("active", Boolean(np.active_pin && id === np.active_pin));
@@ -2393,6 +2397,19 @@
     } catch (err) { toast(err.message); }
   };
   setTimeout(() => checkForAppUpdate(true), 2500);
+
+  // Live ticking HH:MM overlay for Weather Clock & Calendar Clock in the Home LED Bezel
+  function tickLiveClockOverlay() {
+    const el = $("homeLiveClockOverlay");
+    if (!el || el.classList.contains("hidden")) return;
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    const sep = now.getSeconds() % 2 === 0 ? ":" : " ";
+    el.textContent = `${hh}${sep}${mm}`;
+  }
+  setInterval(tickLiveClockOverlay, 1000);
+  tickLiveClockOverlay();
 
   let ws = null;
   let wsRetryTimer = null;

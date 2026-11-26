@@ -452,6 +452,27 @@ input[type="color"] {
   border-radius: 10px;
   background: #000;
 }
+.led-clock-overlay {
+  position: absolute;
+  top: 16%;
+  left: 10%;
+  right: 10%;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #ffffff;
+  text-shadow: 0 0 12px rgba(255, 255, 255, 0.85), 0 0 4px rgba(56, 189, 248, 0.65);
+  pointer-events: none;
+  line-height: 1;
+}
+.led-bezel.power-off #homePreview,
+.led-bezel.power-off #homeLiveImg,
+.led-bezel.power-off #homeLiveClockOverlay {
+  opacity: 0.12;
+  filter: grayscale(1);
+}
 
 /* v4.0 One-Tap Daily Switcher & Swipeable Mood Shelf */
 .pin-grid {
@@ -950,6 +971,7 @@ input[type="color"] {
   }
   .led-bezel { padding: 8px; border-radius: 16px; }
   #homePreview { width: 92px; height: 92px; border-radius: 7px; }
+  .led-clock-overlay { font-size: 18px; letter-spacing: 1px; }
 
   /* Crisp 2x2 Pinned Switcher & 3-Column Modes on Phone! */
   .pin-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
