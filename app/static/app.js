@@ -1467,12 +1467,13 @@
     const gifs = workSchedule.available_gifs && workSchedule.available_gifs.length
       ? workSchedule.available_gifs
       : ["09_mode_deep_focus.gif", "10_mode_coding.gif", "11_mode_on_air_meeting.gif", "12_mode_do_not_disturb.gif", "13_mode_coffee_break.gif", "14_mode_pomodoro.gif", "15_mode_gaming_chill.gif", "16_mode_music_vibe.gif", "17_mode_away_brb.gif", "18_mode_done_offline.gif"];
+    const labels = workSchedule.gif_labels || {};
     const curVal = `${selectedKind}:${selectedTarget || ""}`;
     const opts = [];
     opts.push(`<optgroup label="Animated GIFs">`);
     gifs.forEach((g) => {
       const v = `gif:${g}`;
-      const label = g.replace(/^\d+_/, "").replace(/\.gif$/i, "").replace(/_/g, " ");
+      const label = labels[g] || g.replace(/^\d+_/, "").replace(/^mode_/i, "").replace(/\.gif$/i, "").replace(/_/g, " ");
       opts.push(`<option value="${esc(v)}" ${v === curVal ? "selected" : ""}>GIF · ${esc(label)}</option>`);
     });
     opts.push(`</optgroup><optgroup label="Live Hardware Clocks (RTC)">`);
@@ -1949,15 +1950,16 @@
       const { gifs } = await api("/api/gif_pack");
       grid.innerHTML = "";
       gifs.forEach((g) => {
+        const label = g.label || g.file;
         const tile = document.createElement("div");
         tile.className = "art-tile";
-        tile.innerHTML = `<img src="${safeUrl(g.url)}" /><div class="art-tile-name">${esc(g.file.replace(/^\d+_/, "").replace(".gif", ""))}</div>`;
+        tile.innerHTML = `<img src="${safeUrl(g.url)}" alt="${esc(label)}" /><div class="art-tile-name">${esc(g.emoji ? `${g.emoji} ${label}` : label)}</div>`;
         const b = document.createElement("button");
         b.className = "btn sm primary full"; b.textContent = "Send";
         b.onclick = async () => {
           try {
             const res = await api("/api/gif_pack/send", { method: "POST", body: JSON.stringify({ file: g.file }) });
-            recordSent(g.file); toast(`Sent ${g.file} (${res.wire_frames} frames)`);
+            recordSent(label); toast(`Sent ${label} (${res.wire_frames} frames)`);
           } catch (err) { toast(err.message); }
         };
         tile.appendChild(b); grid.appendChild(tile);

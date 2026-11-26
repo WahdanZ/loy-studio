@@ -166,7 +166,7 @@ def test_slot_invariants_uploads_alerts_and_rules():
         assert all(w["prog"] in LIVE | {S.ALERT_SLOT} for w in panel.writes)
         # mirror kept in sync for every path
         st = await (await c.get("/api/status")).json()
-        assert st["now_playing"]["title"] == "10 Mode Coding"
+        assert st["now_playing"]["title"] == "Coding"
     run(body)
 
 

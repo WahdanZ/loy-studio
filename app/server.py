@@ -85,6 +85,7 @@ from protocol import (
     pil_image_to_ystp01,
     recommend_profile,
 )
+from app.catalog import CATEGORIES, gif_meta
 from app.creative import (
     PROCEDURAL_EFFECTS,
     convert_video_to_gif,
@@ -1688,11 +1689,21 @@ async def handle_custom_clock(req: web.Request) -> web.Response:
 
 
 async def handle_gif_pack_list(_req: web.Request) -> web.Response:
-    items = [
-        {"file": p.name, "url": _gif_url(p), "size": p.stat().st_size, "user": p.parent == USER_GIFS_DIR}
-        for p in _all_gif_paths()
-    ]
-    return web.json_response({"gifs": items})
+    items = []
+    for p in _all_gif_paths():
+        meta = gif_meta(p.name)
+        items.append({
+            "file": p.name,
+            "url": _gif_url(p),
+            "size": p.stat().st_size,
+            "user": p.parent == USER_GIFS_DIR,
+            "label": meta["label"],
+            "emoji": meta["emoji"],
+            "category": "mine" if p.parent == USER_GIFS_DIR else meta["category"],
+            "blurb": meta["blurb"],
+        })
+    categories = [{"id": cid, "label": clabel} for cid, clabel in CATEGORIES]
+    return web.json_response({"gifs": items, "categories": categories})
 
 
 async def handle_gif_pack_send(req: web.Request) -> web.Response:
@@ -1706,12 +1717,13 @@ async def handle_gif_pack_send(req: web.Request) -> web.Response:
     filename = gif_path.name
     raw = gif_path.read_bytes()
     src = _detect_req_source(req)
-    pretty = filename.rsplit(".", 1)[0].replace("_", " ").title()
+    meta = gif_meta(filename)
+    pretty = meta["label"]
     pin = "pinOnAir" if "on_air" in filename else ("pinCoding" if "coding" in filename else "")
     return await _present_or_error(
         functools.partial(build_gif_program_frames, raw, state.width, state.height),
-        {"file": filename},
-        label=f"GIF: {filename}",
+        {"file": filename, "label": pretty},
+        label=f"GIF: {pretty}",
         now_playing=dict(kind="gif", title=pretty, subtitle=f"64×64 Animated Mode · via {src}",
                          active_pin=pin, preview_url=_gif_url(gif_path), source=src),
     )
@@ -3112,7 +3124,7 @@ async def _apply_schedule_rule(
         path = _resolve_gif(target)
         if path is None:
             raise FileNotFoundError(f"Scheduled GIF not found: {target}")
-        pretty = path.stem.replace("_", " ").title()
+        pretty = gif_meta(path.name)["label"]
         await present_program(
             functools.partial(build_gif_program_frames, path.read_bytes(), state.width, state.height),
             label=f"Schedule: {name}", persist=persist,
@@ -3186,7 +3198,12 @@ def _schedule_response(sched: Dict[str, Any], **extra: Any) -> web.Response:
 
 async def handle_work_schedule(req: web.Request) -> web.Response:
     if req.method == "GET":
-        return _schedule_response(_load_work_schedule(), available_gifs=[p.name for p in _all_gif_paths()])
+        paths = _all_gif_paths()
+        return _schedule_response(
+            _load_work_schedule(),
+            available_gifs=[p.name for p in paths],
+            gif_labels={p.name: gif_meta(p.name)["label"] for p in paths},
+        )
     body = await req.json()
     sched = _load_work_schedule()
     if "enabled" in body:
