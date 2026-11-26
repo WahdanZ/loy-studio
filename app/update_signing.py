@@ -21,7 +21,7 @@ import hashlib
 from typing import Dict, Optional, Tuple
 
 # Paste the PUBLIC key printed by `python tools/sign_release.py keygen` here (64 hex chars).
-UPDATE_PUBLIC_KEY_HEX = ""
+UPDATE_PUBLIC_KEY_HEX = "d7855fed5f1c51ec6b6a646fc92abc8a3e952a76fe2ada4b89164d7891d39b3c"
 
 # ---------------- Ed25519 (RFC 8032 reference) ----------------
 _p = 2**255 - 19
