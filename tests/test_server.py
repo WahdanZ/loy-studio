@@ -522,3 +522,58 @@ def test_repair_display_formats_and_rebuilds_slot1_first(as_lan_client):
         d = await (await c.post("/api/gif_pack/send", json={"filename": "11_mode_on_air_meeting.gif"})).json()
         assert d["slot"] == S.LIVE_SLOTS[0]
     run(body)
+
+
+# ---------------------------------------------------------------------------
+# 8. GIF Catalog, /api/gif_pack metadata, and clean Now Playing labels
+# ---------------------------------------------------------------------------
+
+def test_gif_catalog_files_exist_and_are_64x64():
+    from PIL import Image
+    from app.catalog import GIF_CATALOG
+
+    gifs_dir = ROOT / "gifs"
+    for filename in GIF_CATALOG:
+        p = gifs_dir / filename
+        assert p.is_file(), f"Missing catalog GIF: {filename}"
+        with Image.open(p) as im:
+            assert im.size == (64, 64), f"{filename} is {im.size}, expected (64, 64)"
+
+
+def test_api_gif_pack_returns_labels_and_categories():
+    from app.catalog import CATEGORIES, GIF_CATALOG
+
+    async def body(c):
+        r = await c.get("/api/gif_pack")
+        assert r.status == 200
+        data = await r.json()
+        assert [cat["id"] for cat in data["categories"]] == [cid for cid, _ in CATEGORIES]
+        by_file = {g["file"]: g for g in data["gifs"]}
+        for fname, meta in GIF_CATALOG.items():
+            assert fname in by_file, f"{fname} missing from /api/gif_pack"
+            item = by_file[fname]
+            assert item["label"] == meta["label"]
+            assert item["emoji"] == meta["emoji"]
+            assert item["category"] == meta["category"]
+            assert item["blurb"] == meta["blurb"]
+    run(body)
+
+
+def test_now_playing_shows_catalog_label_not_filename():
+    async def body(c):
+        await _connect(c)
+        r = await c.post("/api/gif_pack/send", json={"file": "27_mode_ship_it.gif"})
+        assert r.status == 200
+        st = await (await c.get("/api/status")).json()
+        assert st["now_playing"]["title"] == "Ship It"
+        assert "27_mode_ship_it" not in st["now_playing"]["title"]
+
+        # Schedule rule also uses catalog label
+        await S._apply_schedule_rule(
+            {"id": "s1", "name": "Lunch Break", "kind": "gif", "target": "19_mode_lunch.gif"},
+            source="Schedule",
+        )
+        st2 = await (await c.get("/api/status")).json()
+        assert st2["now_playing"]["title"] == "Lunch"
+        assert "19_mode_lunch" not in st2["now_playing"]["title"]
+    run(body)
