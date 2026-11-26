@@ -166,6 +166,15 @@ def cmd_delete_all(sno: int = 1) -> bytes:
     return build_frame(encode_tlv(TLV.DELETE, bytes([0, 0xFF])), sno=sno, cmd_type=CMD_TYPE_SET)
 
 
+def cmd_format_flash(sno: int = 1) -> bytes:
+    """
+    Erase every stored program (the vendor app's "format flash"). TLV 0x08 value 03, a normal
+    SET frame (never the OTA cmd_type 4). VERIFIED RUNTIME on EXYC-A V2.8.7: resets a scrambled
+    program list (see CLAUDE.md constraint 6); the built-in startup logo survives.
+    """
+    return build_frame(encode_tlv(TLV.DELETE, bytes([3])), sno=sno, cmd_type=CMD_TYPE_SET)
+
+
 def cmd_delete_programs(program_ids_1based: Sequence[int], sno: int = 1) -> bytes:
     """Delete specific 1-based program IDs. TLV 0x08."""
     ids = bytes((p - 1) & 0xFF for p in program_ids_1based)

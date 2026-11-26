@@ -10,7 +10,7 @@
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <title>LOY Studio — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=23" />
+  <link rel="stylesheet" href="/static/style.css?v=24" />
 </head>
 <body>
   <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
@@ -906,6 +906,10 @@
               <button id="btnRunBench" class="btn sm">Run Benchmark</button>
               <span id="benchResult" class="muted"></span>
             </div>
+            <div class="inline" style="padding-top:6px;border-top:1px solid var(--border);">
+              <button id="btnRepairDisplay" class="btn sm danger"><svg class="ico sm"><use href="#i-refresh"/></svg> Repair Display</button>
+              <span class="muted" style="font-size:11.5px;">Use when a switch shows briefly, then jumps back. Erases stored programs. Mac only.</span>
+            </div>
             <hr style="border:none;border-top:1px solid var(--border);" />
             <h3>Hardware On-Device RTC Schedules</h3>
             <div class="inline">
@@ -1011,6 +1015,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=23"></script>
+  <script src="/static/app.js?v=24"></script>
 </body>
 </html>

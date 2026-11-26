@@ -57,6 +57,7 @@ from protocol import (
     build_text_program_frames,
     cmd_delete_all,
     cmd_delete_programs,
+    cmd_format_flash,
     cmd_dispatch_program,
     cmd_game_action,
     cmd_game_launch,
@@ -532,6 +533,7 @@ def _is_lan_authenticated(req: web.Request) -> bool:
 # Paths a phone on Wi-Fi may never call, even when signed in: they change who can access
 # the Mac or replace the app itself.
 LOOPBACK_ONLY_PREFIXES = (
+    "/api/display/repair",
     "/api/auth/set_password",
     "/api/auth/sessions",
     "/api/update/",
@@ -1218,6 +1220,37 @@ async def handle_control(req: web.Request) -> web.Response:
             return web.json_response({"ok": True, "result": res, "status": state.status_dict()})
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
+
+
+async def handle_display_repair(req: web.Request) -> web.Response:
+    """
+    POST /api/display/repair (Mac only) — "Repair display": run the panel's own Format Flash to
+    reset a scrambled program list (symptom: switches show briefly, then jump back). Erases every
+    stored program, then resets slot bookkeeping so the next upload re-creates Slot 1 before Slot 2.
+    """
+    _require_transport()
+    async with state.lock:
+        t = _require_transport()
+        _cancel_alert_restore()
+        await _exit_modal_mode()
+        res = await t.send_frame(cmd_format_flash(sno=t.next_sno()), timeout=30.0)
+        if (res or {}).get("status") != "ok":
+            log.warning("Format Flash was not acknowledged: %s", res)
+            return web.json_response({"error": "The display did not confirm the repair. Try again."}, status=502)
+        state.active_slot = LIVE_SLOTS[1]  # next upload writes Slot 1 first (position order)
+        state.temp_alert_active = False
+        state.alert_brightness_changed = False
+        state.device_schedule_active = False
+        state.save_display_state()
+    sched = _load_work_schedule()
+    if sched.get("device_mode") or sched.get("flashed_count"):
+        sched.update(device_mode=False, flashed_count=0, flashed_at=None)
+        _save_work_schedule(sched)
+    state.last_applied_rule_id = None
+    src = _detect_req_source(req)
+    log.info("Display repaired (Format Flash) via %s", src)
+    state.set_now_playing("idle", "Display repaired", subtitle="Stored programs erased · pick something to show", source=src)
+    return web.json_response({"ok": True})
 
 
 async def handle_upload_frames(req: web.Request) -> web.Response:
@@ -4064,6 +4097,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/connect", handle_connect)
     app.router.add_post("/api/disconnect", handle_disconnect)
     app.router.add_post("/api/control", handle_control)
+    app.router.add_post("/api/display/repair", handle_display_repair)
     app.router.add_post("/api/upload_frames", handle_upload_frames)
     app.router.add_post("/api/upload_media", handle_upload_media)
     app.router.add_post("/api/upload_sequence", handle_upload_sequence)

@@ -1422,6 +1422,20 @@
       $("benchResult").textContent = `${r.measured_bps} B/s (${r.elapsed_s}s, ${r.frames} frames, ${r.hardware_measured ? "BLE" : "Mock"})`;
     } catch (err) { $("benchResult").textContent = err.message; }
   };
+  if ($("btnRepairDisplay")) $("btnRepairDisplay").onclick = async () => {
+    const ok = confirm(
+      "Repair Display?\n\nThis runs the panel's own Format Flash. It fixes switches that show for a moment and then jump back.\n\n" +
+      "It erases every image, GIF and clock stored on the panel. The panel may show its startup logo until you send something new."
+    );
+    if (!ok) return;
+    const btn = $("btnRepairDisplay");
+    btn.disabled = true;
+    try {
+      await api("/api/display/repair", { method: "POST", body: "{}" });
+      toast("Display repaired. Send something to show");
+    } catch (err) { toast(err.message); }
+    finally { btn.disabled = false; }
+  };
   $("btnBriSchedule").onclick = () =>
     sendCtrl({
       action: "brightness_schedule",

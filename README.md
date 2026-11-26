@@ -143,3 +143,5 @@ cd matter && npm install && cd ..
 | 3 | Temporary alerts (RAM only) |
 | 4 – 8 | On-device Flash schedule (up to 5 programs, runs with the Mac offline) |
 | 9 | Throughput benchmark scratch (RAM only) |
+
+If a switch shows a new image for a moment and then jumps back, the panel's program list is out of order: use **Device → Display & BLE Settings → Repair Display** on the Mac. It runs the panel's own Format Flash, which erases the stored images, then send something new.

@@ -317,3 +317,11 @@ def test_ota_upgrade_frames_are_refused():
     """CLAUDE.md constraint 6: cmd_type 4 (OTA) can brick the panel."""
     with pytest.raises(ValueError):
         build_frame(b"", sno=1, cmd_type=4)
+
+
+def test_format_flash_exact_wire_fixture():
+    """Byte-for-byte the frame the EXYC-A panel accepted on 2026-11-26 (SET, never OTA)."""
+    from protocol import cmd_format_flash
+    frame = cmd_format_flash(sno=2)
+    assert frame.hex(" ") == "aa 55 ff ff 09 00 02 00 c1 02 08 01 03 d7 03"
+    assert frame[9] == CMD_TYPE_SET

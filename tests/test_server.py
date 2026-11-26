@@ -503,3 +503,22 @@ def test_ble_disconnect_still_disconnects_when_stop_notify_fails():
     t._client = FakeClient()
     asyncio.run(t.disconnect())
     assert calls == ["stop_notify", "disconnect"] and t._client is None
+
+
+def test_repair_display_formats_and_rebuilds_slot1_first(as_lan_client):
+    lan = as_lan_client
+
+    async def body(c):
+        panel = await _connect(c)
+        await c.post("/api/gif_pack/send", json={"filename": "10_mode_coding.gif"})
+        # Destructive + Mac only: a signed-in phone can't trigger it
+        assert (await c.post("/api/display/repair", json={}, headers=lan)).status == 403
+        r = await c.post("/api/display/repair", json={})
+        assert r.status == 200, await r.text()
+        formats = [f for f in panel.sent_frames if dict(_tlvs(PacketParser().feed(f)[0].payload)).get(TLV.DELETE) == b"\x03"]
+        assert len(formats) == 1
+        st = await (await c.get("/api/status")).json()
+        assert st["now_playing"]["title"] == "Display repaired"
+        d = await (await c.post("/api/gif_pack/send", json={"filename": "11_mode_on_air_meeting.gif"})).json()
+        assert d["slot"] == S.LIVE_SLOTS[0]
+    run(body)
