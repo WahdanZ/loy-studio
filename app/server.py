@@ -379,7 +379,7 @@ def _detect_req_source(req: Optional[web.Request]) -> str:
         return "Menu Bar"
     if "node" in ua or "undici" in ua:
         return "Google Home"
-    if _is_loopback(req.remote):
+    if _is_loopback_req(req):
         return "Mac"
     return "Wi-Fi"
 
