@@ -2039,12 +2039,12 @@
   function renderExploreGifs() {
     const grid = $("exploreGifGrid");
     if (!grid) return;
-    const q = ($("gifFilterSearch")?.value || "").trim().toLowerCase();
+    const qTokens = ($("gifFilterSearch")?.value || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
     const list = exploreGifsData.filter((g) => {
       if (activeGifCat !== "all" && g.category !== activeGifCat) return false;
-      if (q) {
-        const hay = `${g.label || ""} ${g.blurb || ""}`.toLowerCase();
-        if (!hay.includes(q)) return false;
+      if (qTokens.length) {
+        const words = `${g.label || ""} ${g.blurb || ""}`.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+        if (!qTokens.every((tok) => words.some((w) => w.startsWith(tok)))) return false;
       }
       return true;
     });

@@ -500,17 +500,19 @@ def make_scene_cloudy_sky() -> List[Image.Image]:
 
 
 def make_scene_falling_blocks() -> List[Image.Image]:
-    """34: Falling Blocks — colorful geometric blocks dropping and stacking cleanly."""
+    """34: Falling Blocks — colorful square & brick mosaic tiles dropping into place."""
     frames: List[Image.Image] = []
     n = 16
-    # Pre-stacked colorful base rows
+    # Pre-stacked colorful mosaic base rows (2x2 & 2x1 bricks, no tetromino shapes)
     base = [
-        (0, 56, 16, 63, (50, 210, 245)),
-        (16, 56, 32, 63, (255, 195, 50)),
-        (32, 56, 48, 63, (175, 90, 255)),
+        (0, 56, 15, 63, (50, 210, 245)),
+        (16, 56, 31, 63, (255, 195, 50)),
+        (32, 56, 47, 63, (175, 90, 255)),
         (48, 56, 63, 63, (60, 225, 125)),
-        (0, 48, 24, 55, (255, 95, 115)),
-        (40, 48, 63, 55, (75, 145, 255)),
+        (0, 48, 15, 55, (255, 95, 115)),
+        (48, 48, 63, 55, (75, 145, 255)),
+        (16, 48, 23, 55, (60, 225, 125)),
+        (40, 48, 47, 55, (255, 195, 50)),
     ]
     for f in range(n):
         img = Image.new("RGB", (SIZE, SIZE), (6, 7, 14))
@@ -519,16 +521,21 @@ def make_scene_falling_blocks() -> List[Image.Image]:
         for g in range(8, 64, 8):
             d.line([g, 0, g, 63], fill=(14, 17, 28))
             d.line([0, g, 63, g], fill=(14, 17, 28))
-        # Stacked blocks
+        # Stacked mosaic bricks
         for x0, y0, x1, y1, col in base:
             d.rectangle([x0 + 1, y0 + 1, x1 - 1, y1 - 1], fill=col)
-        # Falling active block landing cleanly in the gap (x=24..40, y=48..55)
+            d.line([x0 + 1, y0 + 1, x1 - 1, y0 + 1], fill=(255, 255, 255))
+        # Falling clean 16x8 rectangular mosaic tile landing in the center gap (x=24..39, y=48..55)
         fy = min(48, f * 4)
         col = (255, 145, 45)
         if f >= 13 and f % 2 == 1:
-            col = (255, 245, 200)  # brief settle flash
-        d.rectangle([25, fy + 1, 39, fy + 7], fill=col)
-        d.rectangle([25, fy - 7, 31, fy - 1], fill=col)
+            col = (255, 245, 200)  # brief settle glow
+        d.rectangle([25, fy + 1, 38, fy + 7], fill=col)
+        d.line([25, fy + 1, 38, fy + 1], fill=(255, 235, 180))
+        # Second small square tile trailing behind on the right
+        fy2 = min(40, max(0, (f - 4) * 4))
+        if f >= 4:
+            d.rectangle([49, fy2 + 1, 55, fy2 + 7], fill=(95, 225, 255))
         frames.append(img)
     return frames
 
@@ -598,32 +605,44 @@ def make_seasonal_eid() -> List[Image.Image]:
 
 
 def make_seasonal_new_year() -> List[Image.Image]:
-    """37: New Year — bursting colorful pixel fireworks + NEW YEAR."""
+    """37: New Year — bright, dense bursting pixel fireworks + NEW YEAR."""
     frames: List[Image.Image] = []
     n = 16
     bursts = [
-        (18, 18, 0, (255, 90, 140)),
-        (46, 16, 5, (70, 225, 255)),
-        (32, 26, 10, (255, 215, 65)),
+        (17, 18, 0, (255, 85, 145), (255, 215, 120)),
+        (47, 15, 5, (55, 225, 255), (195, 245, 255)),
+        (32, 26, 10, (255, 215, 55), (255, 130, 50)),
     ]
     for f in range(n):
         img = Image.new("RGB", (SIZE, SIZE), (3, 4, 14))
-        for cx, cy, start, col in bursts:
+        d = ImageDraw.Draw(img)
+        for cx, cy, start, col, core_col in bursts:
             age = (f - start) % n
-            if age < 10:
-                rad = age * 1.6
-                fade = max(0.2, 1.0 - age / 10.0)
+            if age < 12:
+                # Bright ignition flash at center
+                if age <= 2:
+                    r0 = 2 + age
+                    d.ellipse([cx - r0, cy - r0, cx + r0, cy + r0], fill=(255, 255, 240))
+                rad = 2.0 + age * 1.45
+                fade = max(0.35, 1.0 - age / 14.0)
                 c = tuple(int(v * fade) for v in col)
-                for k in range(8):
-                    ang = 2 * math.pi * k / 8.0
+                c_in = tuple(int(v * fade) for v in core_col)
+                for k in range(12):
+                    ang = 2 * math.pi * k / 12.0
+                    # Outer 2x2 glowing spark head
                     px = int(round(cx + rad * math.cos(ang)))
                     py = int(round(cy + rad * math.sin(ang)))
-                    _pt(img, px, py, c)
-                    if age > 2:
-                        px2 = int(round(cx + (rad - 2) * math.cos(ang)))
-                        py2 = int(round(cy + (rad - 2) * math.sin(ang)))
-                        _pt(img, px2, py2, (255, 255, 255) if age < 4 else c)
-        draw_pixel_text(img, "NEW YEAR", 51, (255, 225, 95))
+                    d.rectangle([px, py, px + 1, py + 1], fill=(255, 255, 255) if age < 4 else c)
+                    # Inner trail spark
+                    if age >= 2:
+                        px2 = int(round(cx + (rad - 3.5) * math.cos(ang)))
+                        py2 = int(round(cy + (rad - 3.5) * math.sin(ang)))
+                        _pt(img, px2, py2, c_in)
+                    if age >= 4:
+                        px3 = int(round(cx + (rad - 6.5) * math.cos(ang)))
+                        py3 = int(round(cy + (rad - 6.5) * math.sin(ang)))
+                        _pt(img, px3, py3, c)
+        draw_pixel_text(img, "NEW YEAR", 51, (255, 230, 95))
         frames.append(img)
     return frames
 
