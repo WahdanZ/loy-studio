@@ -76,6 +76,7 @@ from .commands import (
     build_text_program_frames,
     build_text_clock_program_frames,
     build_multi_region_hw_clock_frames,
+    encode_period_pro_tlv,
     encode_text_clock_placeholders,
 )
 from .image_codec import (

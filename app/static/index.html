@@ -10,7 +10,7 @@
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <title>LOY Studio — Privacy-First Pixel Display Studio</title>
-  <link rel="stylesheet" href="/static/style.css?v=19" />
+  <link rel="stylesheet" href="/static/style.css?v=20" />
 </head>
 <body>
   <!-- Inline Crisp Vector SVG Sprite (100% Offline) -->
@@ -128,6 +128,7 @@
                   <h2 id="homeDevName" style="font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">No Display Connected</h2>
                   <p class="muted" id="homeDevMeta" style="font-size:11.5px;">Tap top pill to connect BLE</p>
                   <div id="homeNowBadge" class="badge blue" style="margin-top:4px;font-size:11px;display:inline-flex;">Now: Ready</div>
+                  <div id="homeSchedSummary" class="muted" style="margin-top:4px;font-size:11px;">🗓️ Schedule: —</div>
                 </div>
                 <div class="inline" style="flex-wrap:nowrap;gap:5px;">
                   <button id="btnHomePowerOn" class="btn sm" title="Power On"><svg class="ico sm"><use href="#i-power"/></svg></button>
@@ -701,6 +702,19 @@
           <div id="schedTimelineLegend" class="inline" style="gap:8px;font-size:11.5px;"></div>
         </div>
 
+        <div class="card" style="margin-bottom:14px;">
+          <div class="card-header">
+            <h3>💾 Save Schedule to Display Memory (Runs Offline)</h3>
+            <span id="schedFlashedBadge" class="badge green">On-Device RTC</span>
+          </div>
+          <p class="muted" style="font-size:12px;">Writes your enabled GIF &amp; Clock rules with exact dates, weekdays, and time windows directly into the display's built-in flash memory (Slots 1–8) so it switches automatically even when your Mac is off.</p>
+          <div class="inline">
+            <label class="muted" style="font-size:12px;">From <input id="schedFlashStart" type="date" style="width:132px;" /></label>
+            <label class="muted" style="font-size:12px;">To <input id="schedFlashEnd" type="date" value="2099-12-31" style="width:132px;" /></label>
+            <button id="btnSchedFlashDevice" class="btn sm primary" style="flex:1;">💾 Flash to Display Memory</button>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-header">
             <h3>Schedule Rules <span class="muted" style="font-weight:400;">(Top match wins)</span></h3>
@@ -967,6 +981,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=19"></script>
+  <script src="/static/app.js?v=20"></script>
 </body>
 </html>

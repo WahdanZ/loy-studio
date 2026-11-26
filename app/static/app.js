@@ -1328,6 +1328,20 @@
         .map((r) => `<div style="padding:4px 0;border-bottom:1px solid var(--border);">${r.time} — <b>${r.title}</b> <span class="muted">(${r.source})</span></div>`)
         .join("");
     }
+    const ss = st.schedule_summary;
+    if (ss && $("homeSchedSummary")) {
+      if (!ss.enabled) {
+        $("homeSchedSummary").textContent = "🗓️ Auto Schedule paused";
+      } else {
+        const act = ss.active ? `${ss.active.name} (${ss.active.start}–${ss.active.end})` : "None right now";
+        const nxt = ss.next ? ` · Next: ${ss.next.name} at ${ss.next.start}` : "";
+        const fl = ss.flashed_count ? ` · 💾 ${ss.flashed_count} in device memory` : "";
+        $("homeSchedSummary").textContent = `🗓️ Scheduled: ${act}${nxt}${fl}`;
+      }
+      if ($("schedFlashedBadge") && ss.flashed_at) {
+        $("schedFlashedBadge").textContent = `Flashed ${ss.flashed_count} slots (${ss.flashed_at})`;
+      }
+    }
   }
 
   async function scanBle() {
@@ -2115,6 +2129,22 @@
       const ev = res.event;
       if ($("ctxCalReadout")) $("ctxCalReadout").textContent = ev ? `Live: ${ev.title} in ${ev.minutes_left}m` : "Live: No meetings today (Free)";
       toast(ev ? `Calendar Clock sent: ${ev.title} (${ev.minutes_left}m)` : "Calendar Clock sent (No upcoming meetings)");
+    } catch (err) { toast(err.message); }
+  };
+
+  if ($("schedFlashStart") && !$("schedFlashStart").value) {
+    $("schedFlashStart").value = new Date().toISOString().slice(0, 10);
+  }
+  if ($("btnSchedFlashDevice")) $("btnSchedFlashDevice").onclick = async () => {
+    try {
+      const start_date = $("schedFlashStart")?.value || new Date().toISOString().slice(0, 10);
+      const end_date = $("schedFlashEnd")?.value || "2099-12-31";
+      toast("Flashing schedule into display memory...");
+      const res = await api("/api/work_schedule/flash_device", {
+        method: "POST",
+        body: JSON.stringify({ start_date, end_date }),
+      });
+      toast(`💾 Flashed ${res.flashed.length} slots (${start_date} → ${end_date}) — runs offline!`);
     } catch (err) { toast(err.message); }
   };
 

@@ -69,6 +69,7 @@ from protocol import (
     cmd_set_scoreboard,
     cmd_set_stopwatch,
     cmd_sync_time,
+    encode_period_pro_tlv,
     encode_ystp01,
     pil_image_to_ystp01,
     recommend_profile,
@@ -359,6 +360,7 @@ class ControllerState:
             "now_playing": self.now_playing,
             "recent_sent": list(self.recent_sent),
             "auto_cycle_enabled": bool(cfg.get("auto_cycle_enabled", False)),
+            "schedule_summary": _build_schedule_summary(),
         }
 
 
@@ -2434,6 +2436,108 @@ def _match_schedule_rule(rules: List[Dict[str, Any]], now: Optional[datetime.dat
     return None
 
 
+def _build_schedule_summary(now: Optional[datetime.datetime] = None) -> Dict[str, Any]:
+    """Compute what is scheduled right now and what comes up next for synced display across all devices."""
+    now = now or datetime.datetime.now()
+    sched = _load_work_schedule()
+    rules = sched.get("rules", [])
+    active = _match_schedule_rule(rules, now)
+    day_key = DAY_KEYS[now.weekday()]
+    cur_min = now.hour * 60 + now.minute
+    next_rule = None
+    best_delta = 10**9
+    for r in rules:
+        if not r.get("enabled", True):
+            continue
+        days = [str(d).lower() for d in r.get("days", [])]
+        if day_key not in days:
+            continue
+        s_min = _hhmm_to_min(r.get("start", "00:00"))
+        if s_min > cur_min and (s_min - cur_min) < best_delta:
+            best_delta = s_min - cur_min
+            next_rule = r
+    return {
+        "enabled": bool(sched.get("enabled", True)),
+        "active": {"name": active["name"], "start": active["start"], "end": active["end"]} if active else None,
+        "next": {"name": next_rule["name"], "start": next_rule["start"], "end": next_rule["end"]} if next_rule else None,
+        "flashed_at": sched.get("flashed_at"),
+        "flashed_count": sched.get("flashed_count", 0),
+    }
+
+
+async def handle_work_schedule_flash_device(req: web.Request) -> web.Response:
+    """
+    POST /api/work_schedule/flash_device — Store enabled schedule rules directly in the LED
+    display's on-board flash memory (Slots 1..N) with TLV 0x16 (PERIOD_PRO) date/weekday/time
+    windows so the display switches autonomously on its internal RTC even with Mac offline!
+    """
+    if not state.transport or not state.transport.is_connected:
+        return web.json_response({"error": "Not connected to display"}, status=400)
+    body = await req.json() if req.can_read_body else {}
+    start_date = str(body.get("start_date") or datetime.date.today().isoformat()).strip()
+    end_date = str(body.get("end_date") or "2099-12-31").strip()
+    sched = _load_work_schedule()
+    day_to_num = {k: i + 1 for i, k in enumerate(DAY_KEYS)}
+
+    flashable = [
+        r for r in sched.get("rules", [])
+        if r.get("enabled", True) and r.get("kind") in ("gif", "hw_clock")
+    ][:8]
+    if not flashable:
+        return web.json_response({"error": "No enabled GIF or Clock rules to flash"}, status=400)
+
+    flashed: List[Dict[str, Any]] = []
+    async with state.lock:
+        t = state.transport
+        await _ensure_exit_modal_mode()
+        await t.send_frame(cmd_sync_time(sno=t.next_sno()))
+        for idx, rule in enumerate(flashable):
+            slot = idx + 1
+            weekdays = [day_to_num[d.lower()] for d in rule.get("days", DAY_KEYS) if d.lower() in day_to_num] or [1, 2, 3, 4, 5, 6, 7]
+            s_t = str(rule.get("start", "08:00"))
+            e_t = str(rule.get("end", "18:00"))
+            windows = [f"{s_t}-23:59", f"00:00-{e_t}"] if _hhmm_to_min(s_t) > _hhmm_to_min(e_t) else [f"{s_t}-{e_t}"]
+            period_tlv = encode_period_pro_tlv(windows, weekdays=weekdays, start_date=start_date, end_date=end_date)
+
+            kind = rule.get("kind")
+            target = str(rule.get("target", ""))
+            if kind == "gif":
+                gif_path = GIFS_DIR / Path(target).name
+                if not gif_path.is_file():
+                    continue
+                wire_frames = build_gif_program_frames(
+                    gif_path.read_bytes(), state.width, state.height,
+                    program_id=slot, start_sno=t.next_sno(), show_now=False, data_save=0,
+                    period_pro_tlv=period_tlv,
+                )
+            else:
+                fg = _parse_hex_rgb(rule.get("color", "#38bdf8"))
+                accent = _parse_hex_rgb(rule.get("accent", "#ec4899"))
+                bg_res = _render_hw_clock_shape_bg(state.width, state.height, target, fg, accent, (0, 0, 0))
+                regions = _build_hw_clock_regions(target, state.width, state.height, fg, accent, (0, 0, 0))
+                if regions is None:
+                    continue
+                wire_frames = build_multi_region_hw_clock_frames(
+                    regions, state.width, state.height,
+                    program_id=slot, start_sno=t.next_sno(), show_now=False, data_save=0,
+                    background_resource=bg_res, period_pro_tlv=period_tlv,
+                )
+            await t.send_frames(wire_frames, label=f"Flash Slot {slot}: {rule.get('name', target)}")
+            flashed.append({"slot": slot, "name": rule.get("name", target), "windows": windows})
+
+        await t.send_frame(cmd_pgm_play(model=0, index=0, sno=t.next_sno()))
+
+    sched["flashed_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    sched["flashed_count"] = len(flashed)
+    _save_work_schedule(sched)
+    state.set_now_playing(
+        "schedule", f"On-Device Schedule ({len(flashed)} slots)",
+        subtitle=f"{start_date} → {end_date} · Runs offline on display RTC",
+        source="Device Flash",
+    )
+    return web.json_response({"ok": True, "flashed": flashed, "start_date": start_date, "end_date": end_date})
+
+
 async def _apply_schedule_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
     if not state.transport or not state.transport.is_connected:
         raise RuntimeError("Not connected to display")
@@ -3005,6 +3109,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/work_schedule/apply", handle_work_schedule_apply)
     app.router.add_post("/api/work_schedule/test_rule", handle_work_schedule_test_rule)
     app.router.add_post("/api/work_schedule/preset", handle_work_schedule_preset)
+    app.router.add_post("/api/work_schedule/flash_device", handle_work_schedule_flash_device)
     app.router.add_post("/api/notify", handle_notify)
     app.router.add_post("/api/hydration_now", handle_hydration_now)
     app.router.add_post("/api/weather_clock", handle_weather_clock)

@@ -453,6 +453,39 @@ def cmd_set_ble_password(pwd_type: int, password: str = "", sno: int = 1) -> byt
 # Multi-frame Program Uploads (YSTP01 Images, Native GIFs, Text)
 # ---------------------------------------------------------------------------
 
+def encode_period_pro_tlv(
+    time_windows: Sequence[str],
+    *,
+    weekdays: Sequence[int] = (1, 2, 3, 4, 5, 6, 7),
+    start_date: str = "2026-01-01",
+    end_date: str = "2099-12-31",
+    type_period: int = 0,
+) -> bytes:
+    """
+    Encode TLV 0x16 (PERIOD_PRO) to store a date/weekday/time schedule directly in
+    the LED display's on-board flash memory (a829 lines 503-514).
+      weekdays: 1=Mon .. 7=Sun
+      time_windows: list of "HH:MM-HH:MM" strings
+    """
+    sy, sm, sd = (int(x) for x in start_date.split("-"))
+    ey, em, ed = (int(x) for x in end_date.split("-"))
+    week_mask = 0
+    for d in weekdays:
+        if 1 <= int(d) <= 7:
+            week_mask |= 1 << (int(d) - 1)
+    if week_mask == 0:
+        week_mask = 0x7F
+    body = bytearray()
+    body.append(type_period & 0xFF)
+    body.extend(struct.pack("<HBBHBBBB", sy, sm, sd, ey, em, ed, week_mask, len(time_windows) & 0xFF))
+    for win in time_windows:
+        s_part, e_part = win.strip().split("-")
+        sh, smin = (int(x) for x in s_part.split(":"))
+        eh, emin = (int(x) for x in e_part.split(":"))
+        body.extend([sh & 0xFF, smin & 0xFF, eh & 0xFF, emin & 0xFF])
+    return encode_tlv(TLV.PERIOD_PRO, bytes(body))
+
+
 def _build_program_header_tlv(
     id_pro_0: int,
     width: int,
@@ -463,6 +496,7 @@ def _build_program_header_tlv(
     play_loop: int = 1,
     play_fixed_time: Optional[int] = None,
     type_bg: int = 0,
+    period_pro_tlv: Optional[bytes] = None,
 ) -> bytes:
     """Build program header TLV bundle (module a829 ce() + re())."""
     parts: List[bytes] = []
@@ -479,6 +513,8 @@ def _build_program_header_tlv(
         play_mode = 0
         play_val = play_loop
     parts.append(encode_tlv(TLV.PRO_PROP, struct.pack("<BBHH", type_bg & 0xFF, play_mode, play_val, 3)))
+    if period_pro_tlv:
+        parts.append(period_pro_tlv)
     parts.append(encode_tlv(TLV.ID_RECT, bytes([0])))
     parts.append(encode_tlv(TLV.RECT_POS, struct.pack("<HHHHB", 0, 0, width, height, 0)))
     return b"".join(parts)
@@ -549,6 +585,7 @@ def build_graphic_program_frames(
     show_now: bool = True,
     data_save: int = 0,
     chunk_size: int = DEFAULT_DATA_CHUNK_SIZE,
+    period_pro_tlv: Optional[bytes] = None,
 ) -> List[bytes]:
     """
     Build the complete sequence of BLE wire frames to upload a graphic resource
@@ -566,6 +603,7 @@ def build_graphic_program_frames(
             data_save=data_save,
             play_loop=play_loop,
             play_fixed_time=play_fixed_time,
+            period_pro_tlv=period_pro_tlv,
         )
     )
 
@@ -684,6 +722,7 @@ def build_text_clock_program_frames(
     background_resource: Optional[bytes] = None,
     bg_mode: str = "behind",
     chunk_size: int = DEFAULT_DATA_CHUNK_SIZE,
+    period_pro_tlv: Optional[bytes] = None,
 ) -> List[bytes]:
     """
     Build wire frames for a standalone hardware-ticking `text_clock` program
@@ -780,6 +819,7 @@ def build_multi_region_hw_clock_frames(
     background_resource: Optional[bytes] = None,
     bg_mode: str = "behind",
     chunk_size: int = DEFAULT_DATA_CHUNK_SIZE,
+    period_pro_tlv: Optional[bytes] = None,
 ) -> List[bytes]:
     """
     Build a multi-region standalone hardware-ticking clock program.
@@ -814,6 +854,8 @@ def build_multi_region_hw_clock_frames(
     hdr_parts.append(encode_tlv(TLV.ID_PRO, bytes([id_pro_0])))
     type_bg = (1 if is_mask else 4) if background_resource is not None else 0
     hdr_parts.append(encode_tlv(TLV.PRO_PROP, struct.pack("<BBHH", type_bg, 0, 1, 3)))
+    if period_pro_tlv:
+        hdr_parts.append(period_pro_tlv)
 
     for r_idx, reg in enumerate(regions):
         rx = int(reg.get("x", 0))
