@@ -358,6 +358,13 @@ def _get_macos_eventkit_event(within_minutes: int = 120, calendar_name: str = ""
     try:
         from Foundation import NSDate  # type: ignore
 
+        # A long-lived EKEventStore in this run-loop-less thread never processes change notifications,
+        # so meetings added or accepted after LOY started were invisible. Pull fresh data every query.
+        try:
+            store.refreshSourcesIfNecessary()
+            store.reset()
+        except Exception:
+            pass
         cal_list = None
         fv = calendar_name.strip()
         if fv:

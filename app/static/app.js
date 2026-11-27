@@ -1363,6 +1363,7 @@
 
   // ---------------- Connection & Device ----------------
   function applyStatus(st) {
+    if (st.app_version && $("brandVersion")) $("brandVersion").textContent = `v${st.app_version}`;
     connected = st.connected;
     const shortName = st.connected ? (st.device_name || st.address || "Connected") : "Connect";
     const label = st.connected ? `${shortName} (${st.width}×${st.height})` : "Disconnected";
