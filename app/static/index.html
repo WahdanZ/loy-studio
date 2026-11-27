@@ -800,6 +800,22 @@
             </div>
 
             <div class="card">
+              <div class="card-header"><h2><svg class="ico"><use href="#i-clock"/></svg> Transit Clock</h2><span class="badge green">U + S-Bahn</span></div>
+              <div id="trReadout" class="muted">Live U-Bahn / S-Bahn departures under the hardware clock (Berlin, BVG).</div>
+              <div class="inline">
+                <button id="btnTrNear" class="btn sm">📍 Near me</button>
+                <input id="trQuery" type="text" placeholder="Your address or a station" style="flex:1;" />
+                <button id="btnTrFind" class="btn sm">Find</button>
+              </div>
+              <div id="trResults" style="display:flex;flex-direction:column;gap:6px;"></div>
+              <div class="inline">
+                <input id="trDirection" type="text" placeholder="Only towards… (optional, e.g. Wittenau)" style="flex:1;" />
+                <button id="btnTrSend" class="btn sm primary"><svg class="ico sm"><use href="#i-send"/></svg> Send</button>
+              </div>
+              <label class="inline muted" style="gap:8px;"><input id="trAuto" type="checkbox" /> Keep it fresh while shown (every 3m, 06–23h)</label>
+            </div>
+
+            <div class="card">
               <div class="card-header"><h2><svg class="ico"><use href="#i-bell"/></svg> Alert Webhook</h2><span class="badge blue">POST /api/notify</span></div>
               <p class="muted">Shows a temporary alert, then returns to what was playing.</p>
               <div class="inline">

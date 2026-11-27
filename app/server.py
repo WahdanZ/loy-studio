@@ -111,6 +111,8 @@ from app.smart_features import (
     render_notification_gif,
     render_weather_clock_bg_gif,
 )
+from app.transit import DEFAULT_PRODUCTS as TRANSIT_DEFAULT_PRODUCTS
+from app.transit import fetch_departures, render_transit_bg_gif, search_stops, stops_near_address, stops_nearby
 
 log = logging.getLogger("loy.server")
 
@@ -229,6 +231,13 @@ DEFAULT_SMART_CONFIG: Dict[str, Any] = {
     "weather_enabled": False,
     "weather_city": "Berlin",
     "auto_cycle_enabled": False,
+    # Transit Clock (Berlin U-/S-Bahn departures via the keyless BVG API)
+    "transit_enabled": False,  # keep it fresh while it is on the panel
+    "transit_stop_id": "",
+    "transit_stop_name": "",
+    "transit_direction": "",  # optional, comma separated: only trains towards these
+    "transit_products": "subway,suburban",
+    "transit_refresh_min": 3,
 }
 
 DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -3555,6 +3564,87 @@ async def _upload_weather_clock(city: str, source: str = "App", *, persist: bool
     return {**res, "weather": wx}
 
 
+def _transit_products(cfg: Dict[str, Any]) -> List[str]:
+    raw = str(cfg.get("transit_products") or "")
+    return [p.strip() for p in raw.split(",") if p.strip()] or list(TRANSIT_DEFAULT_PRODUCTS)
+
+
+async def _upload_transit_clock(source: str = "App", *, persist: bool = True) -> Dict[str, Any]:
+    _require_transport()
+    cfg = _load_smart_config()
+    stop_id = str(cfg.get("transit_stop_id") or "").strip()
+    stop_name = str(cfg.get("transit_stop_name") or "").strip() or "Station"
+    if not stop_id:
+        raise ValueError("Pick a station first (Auto Routines → Transit Clock)")
+    deps = await asyncio.to_thread(
+        fetch_departures, stop_id, products=_transit_products(cfg), direction_filter=str(cfg.get("transit_direction") or ""),
+    )
+    bg_gif = render_transit_bg_gif(stop_name, deps, size=state.width)
+    w, h = state.width, state.height
+    regions = [
+        {"template": "{hh}:{mm}", "x": 4, "y": 4, "w": w - 8, "h": 24, "color": (255, 255, 255), "bg_color": (0, 0, 0), "font_size": 16},
+    ]
+    nxt = deps[0] if deps else None
+    sub = (f"Next: {nxt['line']} → {nxt['direction'].title()} {nxt['time']}" if nxt else "No departures soon") + f" · via {source}"
+    b64_prev = "data:image/gif;base64," + base64.b64encode(bg_gif).decode("ascii")
+    res = await present_program(
+        functools.partial(build_multi_region_hw_clock_frames, regions, w, h, background_resource=bg_gif, bg_mode="behind"),
+        label=f"Transit: {stop_name}",
+        persist=persist,
+        sync_time=True,
+        now_playing=dict(
+            kind="clock", title=f"Transit Clock · {stop_name}", subtitle=sub,
+            active_pin="pinTransit", preview_url=b64_prev, overlay_clock=True, source=source,
+        ),
+    )
+    shown = [{k: d[k] for k in ("line", "direction", "time", "delay_min", "cancelled")} for d in deps[:6]]
+    return {**res, "departures": shown}
+
+
+async def handle_transit_stops(req: web.Request) -> web.Response:
+    q = str(req.query.get("q") or "").strip()[:60]
+    try:
+        stops = await asyncio.to_thread(search_stops, q)
+        return web.json_response({"stops": stops})
+    except Exception as exc:
+        return web.json_response({"error": f"Station search failed: {exc}"}, status=502)
+
+
+async def handle_transit_nearby(req: web.Request) -> web.Response:
+    """Closest stations to ?lat=&lon= (browser location) or ?address= (street + number). Nothing is stored."""
+    prods = _transit_products(_load_smart_config())
+    try:
+        if req.query.get("address"):
+            res = await asyncio.to_thread(stops_near_address, str(req.query["address"])[:120], products=prods)
+            return web.json_response(res)
+        lat, lon = float(req.query.get("lat", "")), float(req.query.get("lon", ""))
+        return web.json_response({"stops": await asyncio.to_thread(stops_nearby, lat, lon, products=prods)})
+    except ValueError as exc:
+        return web.json_response({"error": str(exc) or "Location missing"}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": f"Nearby search failed: {exc}"}, status=502)
+
+
+async def handle_transit_clock(req: web.Request) -> web.Response:
+    body = await req.json() if req.can_read_body else {}
+    cfg = _load_smart_config()
+    changed = False
+    for key, field, limit in (("transit_stop_id", "stop_id", 40), ("transit_stop_name", "stop_name", 80), ("transit_direction", "direction", 80)):
+        if field in body:
+            val = str(body.get(field) or "").strip()[:limit]
+            if val != cfg.get(key):
+                cfg[key] = val
+                changed = True
+    if changed:
+        _save_smart_config(cfg)
+    try:
+        return web.json_response(await _upload_transit_clock(source=_detect_req_source(req)))
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": f"Transit Clock failed: {exc}"}, status=500)
+
+
 async def _upload_calendar_clock(
     ics_url: str = "", calendar_name: str = "", source: str = "App", *, persist: bool = True
 ) -> Dict[str, Any]:
@@ -4086,6 +4176,7 @@ async def _smart_watcher_loop() -> None:
     last_hydration_ts = time.monotonic()
     last_weather_ts = 0.0
     last_cal_clock_ts = 0.0
+    last_transit_ts = 0.0
     last_cycle_ts = 0.0
     cycle_idx = 0
     alerted_events: Set[str] = set()
@@ -4171,6 +4262,15 @@ async def _smart_watcher_loop() -> None:
                         str(cfg.get("calendar_ics_url") or ""), str(cfg.get("calendar_name") or ""),
                         source="Auto", persist=AUTO_REFRESH_PERSIST,
                     ))
+
+            # 4b. Transit Clock refresh: only while it is what the panel shows, 06:00-23:00
+            #     (absolute HH:MM times stay right between redraws; each redraw writes Flash).
+            if cfg.get("transit_enabled") and idle_for_refresh and state.now_playing.get("active_pin") == "pinTransit":
+                now_dt = datetime.datetime.now()
+                every = max(2, min(15, int(cfg.get("transit_refresh_min") or 3))) * 60.0
+                if 6 <= now_dt.hour < 23 and now_mono - last_transit_ts >= every:
+                    last_transit_ts = now_mono
+                    await ticker.run("transit", _upload_transit_clock(source="Auto", persist=AUTO_REFRESH_PERSIST))
 
             # 5. One-Tap Auto-Cycle (Calendar Clock -> Weather Clock -> Synthwave every 5 min).
             #    The Mac scheduler pauses while auto-cycle is on, so steps are not overridden.
@@ -4310,6 +4410,9 @@ def create_app() -> web.Application:
     app.router.add_post("/api/notify", handle_notify)
     app.router.add_post("/api/hydration_now", handle_hydration_now)
     app.router.add_post("/api/weather_clock", handle_weather_clock)
+    app.router.add_post("/api/transit_clock", handle_transit_clock)
+    app.router.add_get("/api/transit/stops", handle_transit_stops)
+    app.router.add_get("/api/transit/nearby", handle_transit_nearby)
     app.router.add_post("/api/calendar_clock", handle_calendar_clock)
     app.router.add_post("/api/auto_cycle", handle_auto_cycle)
     app.router.add_get("/api/calendars", handle_calendars_list)

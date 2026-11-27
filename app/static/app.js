@@ -2176,6 +2176,7 @@
     refreshSmartConfig();
   }
 
+  let trStop = null; // Transit Clock station {id, name}
   async function refreshSmartConfig() {
     try {
       const { config, context, calendars, calendar_auth, active_override, weather_cache } = await api("/api/smart_config");
@@ -2205,6 +2206,12 @@
         $("wxAuto").checked = Boolean(config.weather_enabled);
         $("hydEnabled").checked = Boolean(config.hydration_enabled);
         $("hydMin").value = config.hydration_interval_min ?? 60;
+        if ($("trAuto")) {
+          $("trAuto").checked = Boolean(config.transit_enabled);
+          if (document.activeElement !== $("trDirection")) $("trDirection").value = config.transit_direction || "";
+          trStop = config.transit_stop_id ? { id: config.transit_stop_id, name: config.transit_stop_name || "Station" } : null;
+          if (trStop && !$("trResults").childElementCount) $("trReadout").textContent = `Station: ${trStop.name}`;
+        }
       }
   if ($("btnAutoCycle") && config) {
         const on = Boolean(config.auto_cycle_enabled);
@@ -2251,6 +2258,7 @@
           weather_city: $("wxCity").value.trim() || "Berlin",
           hydration_enabled: $("hydEnabled").checked,
           hydration_interval_min: Number($("hydMin").value) || 60,
+          ...($("trAuto") ? { transit_enabled: $("trAuto").checked, transit_direction: $("trDirection").value.trim() } : {}),
         }),
       });
       toast("Smart desk settings saved");
@@ -2258,7 +2266,7 @@
     } catch (err) { toast(err.message); }
   }
 
-  ["ctxEnabled", "ctxOnAir", "ctxCoding", "ctxIdle", "ctxIdleMin", "ctxCal", "ctxCalClock", "ctxCalName", "ctxCalIcs", "wxAuto", "hydEnabled", "hydMin"].forEach((id) => {
+  ["ctxEnabled", "ctxOnAir", "ctxCoding", "ctxIdle", "ctxIdleMin", "ctxCal", "ctxCalClock", "ctxCalName", "ctxCalIcs", "wxAuto", "hydEnabled", "hydMin", "trAuto", "trDirection"].forEach((id) => {
     if ($(id)) $(id).onchange = saveSmartConfig;
   });
   if ($("btnCalRefresh")) $("btnCalRefresh").onclick = async () => {
@@ -2357,6 +2365,67 @@
       toast(`Sent ${res.weather.city} ${res.weather.temp_c}°C Weather Clock!`);
     } catch (err) { toast(err.message); }
   };
+  // --- Transit Clock (Berlin U-/S-Bahn) -------------------------------------------------------
+  function renderTransitStops(stops, heading) {
+    const box = $("trResults");
+    if (!stops.length) { box.innerHTML = `<div class="muted">No U-/S-Bahn station found nearby.</div>`; return; }
+    box.innerHTML = (heading ? `<div class="muted">${esc(heading)}</div>` : "") + stops.map((st, i) => {
+      const walk = st.distance_m != null ? ` · ${st.distance_m} m · ${st.walk_min} min walk` : "";
+      const lines = (st.products || []).filter((p) => p === "subway" || p === "suburban").map((p) => (p === "subway" ? "U" : "S")).join("+");
+      return `<button class="btn sm" data-tr="${i}" style="justify-content:flex-start;text-align:left;">${esc(st.name.replace(/ \(Berlin\)$/, ""))}<span class="muted">&nbsp;${esc(lines)}${esc(walk)}</span></button>`;
+    }).join("");
+    box.querySelectorAll("[data-tr]").forEach((b) => {
+      b.onclick = () => pickTransitStop(stops[Number(b.dataset.tr)]);
+    });
+  }
+  async function pickTransitStop(st) {
+    trStop = { id: st.id, name: st.name.replace(/ \(Berlin\)$/, "") };
+    $("trResults").innerHTML = "";
+    $("trReadout").textContent = `Station: ${trStop.name}`;
+    await sendTransitClock();
+  }
+  async function sendTransitClock() {
+    if (!trStop) { toast("Pick a station first: tap 📍 Near me or type your address"); return; }
+    try {
+      const res = await api("/api/transit_clock", {
+        method: "POST",
+        body: JSON.stringify({ stop_id: trStop.id, stop_name: trStop.name, direction: $("trDirection").value.trim() }),
+      });
+      const d = (res.departures || [])[0];
+      $("trReadout").textContent = d ? `${trStop.name} · next ${d.line} → ${d.direction} ${d.time}` : `${trStop.name} · no departures soon`;
+      toast(`Transit Clock: ${trStop.name}`);
+    } catch (err) { toast(err.message); }
+  }
+  async function findTransit(params, heading) {
+    $("trResults").innerHTML = `<div class="muted">Searching…</div>`;
+    try {
+      const res = await api(`/api/transit/nearby?${new URLSearchParams(params)}`);
+      renderTransitStops(res.stops || [], heading || (res.address ? `Closest to ${res.address}:` : "Closest stations:"));
+    } catch (err) { $("trResults").innerHTML = ""; toast(err.message); }
+  }
+  if ($("btnTrNear")) $("btnTrNear").onclick = () => {
+    if (!navigator.geolocation) { toast("Location is not available here: type your address instead"); $("trQuery").focus(); return; }
+    $("trResults").innerHTML = `<div class="muted">Finding your location…</div>`;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => findTransit({ lat: pos.coords.latitude.toFixed(5), lon: pos.coords.longitude.toFixed(5) }, "Closest to you:"),
+      () => { $("trResults").innerHTML = ""; toast("Location blocked or unavailable: type your address instead"); $("trQuery").focus(); },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 },
+    );
+  };
+  async function runTransitQuery() {
+    const q = $("trQuery").value.trim();
+    if (q.length < 2) { toast("Type your address (street + number) or a station name"); return; }
+    if (/\d/.test(q)) return findTransit({ address: q }); // has a house number: treat it as an address
+    $("trResults").innerHTML = `<div class="muted">Searching…</div>`;
+    try {
+      const res = await api(`/api/transit/stops?${new URLSearchParams({ q })}`);
+      renderTransitStops(res.stops || [], "Stations:");
+    } catch (err) { $("trResults").innerHTML = ""; toast(err.message); }
+  }
+  if ($("btnTrFind")) $("btnTrFind").onclick = runTransitQuery;
+  if ($("trQuery")) $("trQuery").onkeydown = (e) => { if (e.key === "Enter") runTransitQuery(); };
+  if ($("btnTrSend")) $("btnTrSend").onclick = sendTransitClock;
+
   if ($("btnNtfFlash")) $("btnNtfFlash").onclick = async () => {
     try {
       await api("/api/notify", {
