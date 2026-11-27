@@ -14,8 +14,11 @@ NOW = dt.datetime(2026, 11, 27, 14, 0)
 
 
 def _dep(line, product, direction, hhmm, delay=0, cancelled=None):
+    # Offset-aware time in the machine's own zone (CI runs on UTC), like real API answers parsed locally.
+    h, m = map(int, hhmm.split(":"))
+    iso = NOW.replace(hour=h, minute=m).astimezone().isoformat()
     return {
-        "when": f"2026-11-27T{hhmm}:00+01:00", "plannedWhen": f"2026-11-27T{hhmm}:00+01:00",
+        "when": iso, "plannedWhen": iso,
         "delay": delay, "direction": direction, "cancelled": cancelled,
         "line": {"name": line, "product": product},
     }
