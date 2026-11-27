@@ -14,12 +14,24 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
 | :---: | :---: |
 | <img src="docs/screenshots/display_coding.jpg" width="360" alt="Coding Work Mode on 64x64 LED Display" /> | <img src="docs/screenshots/display_onair.jpg" width="360" alt="ON AIR Mode on 64x64 LED Display" /> |
 
+### Workday Calendar · 24h Day Bar
+
+Your whole day on the panel, from the Mac Calendar or any Google / Outlook `.ics` link: two 12-hour bars (1 pixel = 12 minutes), the meeting in progress in amber, finished meetings dimmed, and a red line for *now*. The bottom row shows the meeting in progress, then the next one (red when it starts within 10 minutes). The hardware clock keeps ticking on top.
+
+<img src="docs/screenshots/panel_calendar_day.png" width="560" alt="Calendar day bar on the 64x64 panel: meeting in progress page and next meeting page" />
+
+<sub>Rendered from the app's own drawing code with a sample day (10:30, a 10:15–12:15 review in progress, 13:00 dev sync next).</sub>
+
 ## App Screenshots
 
 ### Desktop Studio
-| Home Dashboard & Instant Desk Modes | 15 Live Autonomous Hardware Clocks |
+| Home: Now Playing, One-Tap Switcher & Quick Moods | Auto Routines: Calendar, Weather, Webhook & Hydration |
 | :---: | :---: |
-| ![Desktop Home](docs/screenshots/desktop_home.png) | ![Desktop Clocks](docs/screenshots/desktop_clocks.png) |
+| ![Desktop Home](docs/screenshots/desktop_home.png) | ![Desktop Auto Routines](docs/screenshots/desktop_routines.png) |
+
+| 15 Live Autonomous Hardware Clocks |
+| :---: |
+| <img src="docs/screenshots/desktop_clocks.png" width="640" alt="Desktop Clocks" /> |
 
 ### Mobile PWA (iPhone / Android over Local Wi-Fi)
 | Mobile Home & Floating Glass Dock | Touch & Multi-Touch Pixel Studio |
@@ -60,6 +72,7 @@ A 100% local, privacy-first controller, creative pixel studio, and smart-desk au
   - Exposes **`Desk Display`** (On/Off + `0–100%` Brightness slider) and voice-controllable scene switches (**`On Air Mode`**, **`Coding Mode`**, **`Synthwave Clock`**, **`Weather Clock`**) for *"Hey Google"* commands and Google Home Routines.
 - **Smart Desk Automation & macOS Menu Bar**:
   - Zero-touch Mac context detection (auto `ON AIR` when Camera/Zoom is active, auto `Coding` in IDEs/Terminals, auto `BRB` when idle, Apple Calendar 5-minute meeting alerts).
+  - **Workday Calendar · 24h day bar**: every meeting today on two 12-hour bars with a live *now* line; the meeting in progress stays on screen until it ends, followed by the next one. Reads the Mac Calendar (refreshed on every check, so new invites show up) or a Google / Outlook `.ics` link.
   - Webhook alert flash (`POST /api/notify`) that displays a temporary alert and auto-restores the previous mode, plus optional keyless Open-Meteo Pixel Weather + RTC Clock and Hydration reminders.
   - Native macOS Menu Bar controller (`macos/menubar_app.py`) and `launchd` login auto-start (`macos/loy_ctl.sh`).
 
