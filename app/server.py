@@ -209,7 +209,7 @@ DEVICE_SCHEDULE_DISABLED_MSG = (
     "On-device schedules are turned off: on this display firmware they show the startup logo and "
     "disturb normal switching. Use the Mac schedule instead (it runs while LOY Studio is open)."
 )
-APP_VERSION = "4.4.8"
+APP_VERSION = "4.4.9"
 GITHUB_REPO = "WahdanZ/loy-studio"
 
 
