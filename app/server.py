@@ -3566,8 +3566,13 @@ async def _upload_calendar_clock(
         {"template": "{hh}:{mm}", "x": 4, "y": 4, "w": w - 8, "h": 24, "color": (255, 255, 255), "bg_color": (0, 0, 0), "font_size": 16},
     ]
     lbl = f"Cal: {ev['title']} ({ev['minutes_left']}m)" if ev else "Cal Clock: Free"
+    cur = (ev or {}).get("current")
+    nxt = f"Next: {ev['title']} in {ev['minutes_left']}m" if ev and ev["minutes_left"] >= 0 else ""
     b64_prev = "data:image/gif;base64," + base64.b64encode(bg_gif).decode("ascii")
-    sub = f"Next: {ev['title']} in {ev['minutes_left']}m · via {source}" if ev else f"No meetings today · via {source}"
+    parts = ([f"Now: {cur['title']} (ends in {cur['ends_in']}m)"] if cur else []) + ([nxt] if nxt else [])
+    sub = f"{' · '.join(parts)} · via {source}" if parts else f"No meetings today · via {source}"
+    if cur:
+        lbl = f"Cal: {cur['title']} (now)"
     res = await present_program(
         functools.partial(build_multi_region_hw_clock_frames, regions, w, h, background_resource=bg_gif, bg_mode="behind"),
         label=lbl,

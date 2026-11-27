@@ -183,6 +183,42 @@ def _parse_ics_dt(raw: str) -> Optional[datetime.datetime]:
         return None
 
 
+def _pick_meetings(
+    items: List[Tuple[datetime.datetime, Optional[datetime.datetime], str]],
+    now: datetime.datetime,
+    horizon: datetime.datetime,
+    source: str,
+) -> Optional[Dict[str, Any]]:
+    """Pick the next meeting (earliest start >= now-1min) plus the meeting in progress, if any.
+
+    The returned dict keeps the old shape for the NEXT meeting ({title, minutes_left, source}) so the
+    5-minute meeting alert is unchanged, and adds ``current`` = {title, ends_in} for a meeting that
+    has started but not ended. Without this, a meeting dropped off the clock a minute after it began
+    and the later meeting took its place.
+    """
+    grace = datetime.timedelta(minutes=1)
+    upcoming = sorted((st, t) for st, _en, t in items if now - grace <= st <= horizon)
+    ongoing = sorted(
+        ((st, en, t) for st, en, t in items if en is not None and st < now - grace and en > now),
+        key=lambda x: x[0], reverse=True,  # most recently started first
+    )
+    if not upcoming and not ongoing:
+        return None
+    event: Dict[str, Any] = {"source": source}
+    if upcoming:
+        st, title = upcoming[0]
+        event["title"] = title[:24]
+        event["minutes_left"] = max(0, int(round((st - now).total_seconds() / 60.0)))
+    if ongoing:
+        _st, en, title = ongoing[0]
+        event["current"] = {"title": title[:24], "ends_in": max(1, int(round((en - now).total_seconds() / 60.0)))}
+        if not upcoming:
+            # Only a meeting in progress: show it, but never trigger the "starts in 5 min" alert.
+            event["title"] = title[:24]
+            event["minutes_left"] = -1
+    return event
+
+
 def _fetch_upcoming_ics_event(ics_url: str, within_minutes: int = 120) -> Optional[Dict[str, Any]]:
     """Fetch a standard .ics calendar feed (Google / Outlook / Apple) and find the next meeting."""
     ctx = _build_ssl_context()
@@ -200,12 +236,14 @@ def _fetch_upcoming_ics_event(ics_url: str, within_minutes: int = 120) -> Option
     unfolded = re.sub(r"\r?\n[ \t]", "", raw_text)
     now = datetime.datetime.now()
     horizon = now + datetime.timedelta(minutes=max(15, int(within_minutes)))
-    best: Optional[Tuple[int, str]] = None
+    items: List[Tuple[datetime.datetime, Optional[datetime.datetime], str]] = []
 
     for block in unfolded.split("BEGIN:VEVENT")[1:]:
         body = block.split("END:VEVENT", 1)[0]
         summary = ""
         dtstart: Optional[datetime.datetime] = None
+        dtend: Optional[datetime.datetime] = None
+        duration: Optional[datetime.timedelta] = None
         rrule = ""
         for line in body.splitlines():
             if line.startswith("SUMMARY:"):
@@ -214,31 +252,36 @@ def _fetch_upcoming_ics_event(ics_url: str, within_minutes: int = 120) -> Option
                 parts = line.split(":", 1)
                 if len(parts) == 2:
                     dtstart = _parse_ics_dt(parts[1])
+            elif line.startswith("DTEND"):
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    dtend = _parse_ics_dt(parts[1])
+            elif line.startswith("DURATION:"):
+                m_d = re.match(r"P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?", line[9:].strip())
+                if m_d and any(m_d.groups()):
+                    d_, h_, mi_ = (int(g or 0) for g in m_d.groups())
+                    duration = datetime.timedelta(days=d_, hours=h_, minutes=mi_)
             elif line.startswith("RRULE:"):
                 rrule = line[6:].strip().upper()
         if not dtstart or not summary:
             continue
+        length = (dtend - dtstart) if dtend and dtend > dtstart else duration
 
         occ = dtstart
         if occ < now and rrule:
-            # Handle common recurring meetings (DAILY / WEEKLY)
+            # Handle common recurring meetings (DAILY / WEEKLY): today's occurrence, even if it is in progress
             if "FREQ=DAILY" in rrule:
                 occ = datetime.datetime.combine(now.date(), dtstart.time())
-                if occ < now - datetime.timedelta(minutes=1):
+                if occ + (length or datetime.timedelta(minutes=1)) < now:
                     occ += datetime.timedelta(days=1)
             elif "FREQ=WEEKLY" in rrule:
                 m_by = re.search(r"BYDAY=([A-Z,]+)", rrule)
                 days = [_ICS_WEEKDAYS[d] for d in m_by.group(1).split(",") if d in _ICS_WEEKDAYS] if m_by else [dtstart.weekday()]
                 if now.weekday() in days:
                     occ = datetime.datetime.combine(now.date(), dtstart.time())
-        if now - datetime.timedelta(minutes=1) <= occ <= horizon:
-            mins_left = max(0, int(round((occ - now).total_seconds() / 60.0)))
-            if best is None or mins_left < best[0]:
-                best = (mins_left, summary[:24])
+        items.append((occ, occ + length if length else None, summary))
 
-    if best is None:
-        return None
-    return {"title": best[1], "minutes_left": best[0], "source": "ics"}
+    return _pick_meetings(items, now, horizon, "ics")
 
 
 _ek_store_singleton = None
@@ -335,18 +378,15 @@ def _get_macos_eventkit_event(within_minutes: int = 120, calendar_name: str = ""
         end_ns = now_ns.dateByAddingTimeInterval_(float(within_minutes) * 60.0)
         pred = store.predicateForEventsWithStartDate_endDate_calendars_(now_ns, end_ns, cal_list)
         evs = store.eventsMatchingPredicate_(pred) or []
-        best: Optional[Tuple[int, str]] = None
-        for ev in evs:
+        now_dt = datetime.datetime.now()
+        items: List[Tuple[datetime.datetime, Optional[datetime.datetime], str]] = []
+        for ev in evs:  # the predicate also returns meetings that started earlier and are still running
             if ev.isAllDay():
                 continue
-            diff = float(ev.startDate().timeIntervalSinceDate_(now_ns))
-            if -60.0 <= diff <= float(within_minutes) * 60.0:
-                mins = max(0, int(round(diff / 60.0)))
-                title = str(ev.title() or "Meeting").strip()[:24]
-                if best is None or mins < best[0]:
-                    best = (mins, title)
-        if best is not None:
-            return {"title": best[1], "minutes_left": best[0], "source": "eventkit"}
+            st = now_dt + datetime.timedelta(seconds=float(ev.startDate().timeIntervalSinceDate_(now_ns)))
+            en = now_dt + datetime.timedelta(seconds=float(ev.endDate().timeIntervalSinceDate_(now_ns))) if ev.endDate() else None
+            items.append((st, en, str(ev.title() or "Meeting").strip()))
+        return _pick_meetings(items, now_dt, now_dt + datetime.timedelta(minutes=within_minutes), "eventkit")
     except Exception:
         pass
     return None
@@ -372,16 +412,22 @@ def get_upcoming_calendar_event(within_minutes: int = 120, ics_url: str = "", ca
             script = f'''
             set nowDate to current date
             set endDate to nowDate + ({int(within_minutes)} * minutes)
+            set bestTitle to ""
+            set bestStart to missing value
             tell application "Calendar"
                 repeat with cal in calendars
                     set evs to (every event of cal whose start date ≥ nowDate and start date ≤ endDate)
-                    if (count of evs) > 0 then
-                        set ev to item 1 of evs
-                        set minsLeft to round (((start date of ev) - nowDate) / 60)
-                        return (summary of ev) & "||" & (minsLeft as string)
-                    end if
+                    repeat with ev in evs
+                        if bestStart is missing value or (start date of ev) < bestStart then
+                            set bestStart to start date of ev
+                            set bestTitle to summary of ev
+                        end if
+                    end repeat
                 end repeat
             end tell
+            if bestStart is not missing value then
+                return bestTitle & "||" & ((round ((bestStart - nowDate) / 60)) as string)
+            end if
             return ""
             '''
             try:
@@ -676,17 +722,28 @@ def render_calendar_clock_bg_gif(event: Optional[Dict[str, Any]], size: int = 64
     """
     frames: List[Image.Image] = []
     n = 10
-    for f in range(n):
+    # Pages shown one after the other: the meeting in progress first, then the next one.
+    pages: List[Tuple[str, str, bool]] = []  # (when, title, urgent)
+    if event:
+        cur = event.get("current")
+        if cur:
+            ends = int(cur.get("ends_in", 0))
+            pages.append(("NOW" if ends >= 60 else f"END {ends}M", str(cur.get("title") or "MEETING"), False))
+        mins = int(event.get("minutes_left", -1))
+        if mins >= 0:
+            when = "NOW!" if mins <= 1 else (f"IN {mins}M" if mins < 60 else f"IN {mins // 60}H{mins % 60:02d}")
+            pages.append(((("NXT " if cur else "") + when) if len(when) <= 4 or not cur else when, str(event.get("title") or "MEETING"), mins <= 10))
+    for f in range(n * max(1, len(pages))):
         img = Image.new("RGB", (size, size), (0, 0, 0))
         d = ImageDraw.Draw(img)
-        pulse = 0.5 + 0.5 * math.sin(2 * math.pi * (f / n))
+        pulse = 0.5 + 0.5 * math.sin(2 * math.pi * ((f % n) / n))
 
-        if event:
-            mins = int(event.get("minutes_left", 0))
-            title = re.sub(r"[^A-Za-z0-9 :\-+!?]", "", str(event.get("title") or "MEETING")).strip().upper() or "MEETING"
-            urgent = mins <= 10
-            accent = (255, 55, 110) if urgent else (56, 189, 248)
-            dim = (95, 20, 45) if urgent else (20, 55, 85)
+        if pages:
+            when_str, raw_title, urgent = pages[f // n]
+            title = re.sub(r"[^A-Za-z0-9 :\-+!?]", "", raw_title).strip().upper() or "MEETING"
+            in_progress = bool(event.get("current")) and f // n == 0
+            accent = (255, 55, 110) if urgent else ((255, 180, 40) if in_progress else (56, 189, 248))
+            dim = (95, 20, 45) if urgent else ((90, 60, 10) if in_progress else (20, 55, 85))
             bar_col = tuple(int(dim[i] + (accent[i] - dim[i]) * pulse) for i in range(3))
 
             # Horizon divider
@@ -694,7 +751,6 @@ def render_calendar_clock_bg_gif(event: Optional[Dict[str, Any]], size: int = 64
 
             # Pulsing calendar/meeting dot + countdown row (y=35)
             d.ellipse([4, 36, 9, 41], fill=bar_col)
-            when_str = "NOW!" if mins <= 1 else (f"IN {mins}M" if mins < 60 else f"IN {mins // 60}H{mins % 60:02d}")
             draw_bitmap_str(img, when_str[:8], 35, accent, center=False, x=13)
 
             # Meeting title row (y=49) — gently scrolls if longer than 10 chars
@@ -702,7 +758,7 @@ def render_calendar_clock_bg_gif(event: Optional[Dict[str, Any]], size: int = 64
                 draw_bitmap_str(img, title, 49, (255, 255, 255), center=True)
             else:
                 padded = title + "   "
-                shift = f % len(padded)
+                shift = (f % n) % len(padded)
                 window = (padded + padded)[shift : shift + 10]
                 draw_bitmap_str(img, window, 49, (255, 255, 255), center=False, x=2)
         else:
