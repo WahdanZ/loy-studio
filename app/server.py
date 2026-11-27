@@ -3565,11 +3565,14 @@ async def _upload_calendar_clock(
     regions = [
         {"template": "{hh}:{mm}", "x": 4, "y": 4, "w": w - 8, "h": 24, "color": (255, 255, 255), "bg_color": (0, 0, 0), "font_size": 16},
     ]
-    lbl = f"Cal: {ev['title']} ({ev['minutes_left']}m)" if ev else "Cal Clock: Free"
     cur = (ev or {}).get("current")
     nxt = f"Next: {ev['title']} in {ev['minutes_left']}m" if ev and ev["minutes_left"] >= 0 else ""
+    n_today = len((ev or {}).get("day") or [])
+    lbl = f"Cal: {ev['title']} ({ev['minutes_left']}m)" if nxt else (f"Cal Day: {n_today} mtgs" if n_today else "Cal Clock: Free")
     b64_prev = "data:image/gif;base64," + base64.b64encode(bg_gif).decode("ascii")
     parts = ([f"Now: {cur['title']} (ends in {cur['ends_in']}m)"] if cur else []) + ([nxt] if nxt else [])
+    if not parts and n_today:
+        parts = [f"{n_today} meeting{'s' if n_today != 1 else ''} today, all done"]
     sub = f"{' · '.join(parts)} · via {source}" if parts else f"No meetings today · via {source}"
     if cur:
         lbl = f"Cal: {cur['title']} (now)"
@@ -3579,7 +3582,7 @@ async def _upload_calendar_clock(
         persist=persist,
         sync_time=True,
         now_playing=dict(
-            kind="clock", title="Workday Calendar Clock", subtitle=sub,
+            kind="clock", title="Workday Calendar · 24h", subtitle=sub,
             active_pin="pinCalClock", preview_url=b64_prev, overlay_clock=True, source=source,
         ),
     )

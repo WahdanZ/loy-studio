@@ -202,9 +202,22 @@ def _pick_meetings(
         ((st, en, t) for st, en, t in items if en is not None and st < now - grace and en > now),
         key=lambda x: x[0], reverse=True,  # most recently started first
     )
+    # Today's whole schedule for the 24h day bar: (start_min, end_min, title) from midnight, clipped.
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day: List[Tuple[int, int, str]] = []
+    for st, en, t in items:
+        en2 = en if en and en > st else st + datetime.timedelta(minutes=30)
+        a = max(0, int((st - midnight).total_seconds() // 60))
+        b = min(1440, int((en2 - midnight).total_seconds() // 60))
+        if b > a:
+            day.append((a, b, t[:24]))
+    day.sort()
     if not upcoming and not ongoing:
-        return None
-    event: Dict[str, Any] = {"source": source}
+        if not day:
+            return None
+        # Meetings today, but all done: keep the day bar, nothing to announce.
+        return {"source": source, "title": "", "minutes_left": -1, "day": day}
+    event: Dict[str, Any] = {"source": source, "day": day}
     if upcoming:
         st, title = upcoming[0]
         event["title"] = title[:24]
@@ -382,8 +395,12 @@ def _get_macos_eventkit_event(within_minutes: int = 120, calendar_name: str = ""
             cal_list = matched
 
         now_ns = NSDate.date()
-        end_ns = now_ns.dateByAddingTimeInterval_(float(within_minutes) * 60.0)
-        pred = store.predicateForEventsWithStartDate_endDate_calendars_(now_ns, end_ns, cal_list)
+        now_dt0 = datetime.datetime.now()
+        since_midnight = (now_dt0 - now_dt0.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds()
+        # From midnight (for the day bar) to the later of end-of-day and the look-ahead window.
+        start_ns = now_ns.dateByAddingTimeInterval_(-since_midnight)
+        end_ns = now_ns.dateByAddingTimeInterval_(max(float(within_minutes) * 60.0, 86400.0 - since_midnight))
+        pred = store.predicateForEventsWithStartDate_endDate_calendars_(start_ns, end_ns, cal_list)
         evs = store.eventsMatchingPredicate_(pred) or []
         now_dt = datetime.datetime.now()
         items: List[Tuple[datetime.datetime, Optional[datetime.datetime], str]] = []
@@ -722,60 +739,80 @@ def render_weather_clock_bg_gif(temp_c: int, kind: str = "clear_day", city: str 
     return _frames_to_gif(frames, duration_ms=110)
 
 
-def render_calendar_clock_bg_gif(event: Optional[Dict[str, Any]], size: int = 64) -> bytes:
+def render_calendar_clock_bg_gif(
+    event: Optional[Dict[str, Any]], size: int = 64, now: Optional[datetime.datetime] = None
+) -> bytes:
     """
-    Render a 10-frame 64x64 animated Workday Calendar widget in the lower half (y=31..62),
-    leaving the top half (y=2..28) clean for the autonomous hardware RTC `{hh}:{mm}` clock.
+    Workday Calendar Clock: a 24-hour day bar of today's meetings under the hardware RTC clock.
+
+      y=4..28   left clean for the autonomous hardware `{hh}:{mm}` clock
+      y=31..37  00:00-12:00 bar  (5 px per hour, 1 px = 12 min)
+      y=41..47  12:00-24:00 bar  (red line = now, earlier meetings dimmed)
+      y=53      the meeting in progress, then the next one, as pages (scrolls when long)
     """
-    frames: List[Image.Image] = []
-    n = 10
-    # Pages shown one after the other: the meeting in progress first, then the next one.
-    pages: List[Tuple[str, str, bool]] = []  # (when, title, urgent)
+    now = now or datetime.datetime.now()
+    now_min = now.hour * 60 + now.minute
+    day = list((event or {}).get("day") or [])
+
+    pages: List[Tuple[str, RGB]] = []  # (text, colour)
     if event:
         cur = event.get("current")
         if cur:
-            ends = int(cur.get("ends_in", 0))
-            pages.append(("NOW" if ends >= 60 else f"END {ends}M", str(cur.get("title") or "MEETING"), False))
+            pages.append((f"NOW {cur.get('title') or 'MEETING'}", (255, 180, 40)))
         mins = int(event.get("minutes_left", -1))
-        if mins >= 0:
-            when = "NOW!" if mins <= 1 else (f"IN {mins}M" if mins < 60 else f"IN {mins // 60}H{mins % 60:02d}")
-            pages.append(((("NXT " if cur else "") + when) if len(when) <= 4 or not cur else when, str(event.get("title") or "MEETING"), mins <= 10))
-    for f in range(n * max(1, len(pages))):
+        if mins >= 0 and event.get("title"):
+            if mins <= 1:
+                when = "NOW"
+            elif mins < 60:
+                when = f"{mins}M"
+            else:
+                when = (now + datetime.timedelta(minutes=mins)).strftime("%H:%M")
+            pages.append((f"{when} {event['title']}", (255, 55, 110) if mins <= 10 else (56, 189, 248)))
+    if not pages:
+        pages.append(("NO MTGS" if not day else "DAY DONE", (35, 220, 120)))
+
+    palette = [(56, 189, 248), (168, 85, 247), (34, 211, 160), (244, 114, 182)]
+    bar_x0, px_per_h = 2, 5
+    rows = [(0, 31), (720, 41)]  # (start minute, top y)
+
+    frames: List[Image.Image] = []
+    n = 10
+    clean = [re.sub(r"[^A-Za-z0-9 :\-+!?]", "", t).strip().upper() for t, _c in pages]
+    # A long title scrolls one character per frame until it has been shown in full, then the next page.
+    page_frames = [n if len(t) <= 10 else max(n, len(t) + 3) for t in clean]
+    plan = [(p, k) for p, cnt in enumerate(page_frames) for k in range(cnt)]
+    for f, (page, k) in enumerate(plan):
         img = Image.new("RGB", (size, size), (0, 0, 0))
         d = ImageDraw.Draw(img)
         pulse = 0.5 + 0.5 * math.sin(2 * math.pi * ((f % n) / n))
 
-        if pages:
-            when_str, raw_title, urgent = pages[f // n]
-            title = re.sub(r"[^A-Za-z0-9 :\-+!?]", "", raw_title).strip().upper() or "MEETING"
-            in_progress = bool(event.get("current")) and f // n == 0
-            accent = (255, 55, 110) if urgent else ((255, 180, 40) if in_progress else (56, 189, 248))
-            dim = (95, 20, 45) if urgent else ((90, 60, 10) if in_progress else (20, 55, 85))
-            bar_col = tuple(int(dim[i] + (accent[i] - dim[i]) * pulse) for i in range(3))
+        for row_start, y in rows:
+            d.rectangle([bar_x0, y, bar_x0 + 12 * px_per_h - 1, y + 6], fill=(18, 22, 30))
+            for h in range(0, 13, 3):  # tick every 3 hours
+                d.point((min(bar_x0 + h * px_per_h, bar_x0 + 12 * px_per_h - 1), y + 7), fill=(70, 80, 95))
+            for i, (a_min, b_min, _t) in enumerate(day):
+                s2, e2 = max(a_min, row_start), min(b_min, row_start + 720)
+                if s2 >= e2:
+                    continue
+                col = palette[i % len(palette)]
+                if a_min <= now_min < b_min:
+                    col = (255, 180, 40)  # in progress
+                elif b_min <= now_min:
+                    col = tuple(c // 3 for c in col)  # already over
+                x1 = bar_x0 + (s2 - row_start) * px_per_h // 60
+                x2 = max(x1, bar_x0 + (e2 - row_start) * px_per_h // 60 - 1)
+                d.rectangle([x1, y, x2, y + 6], fill=col)
+            if row_start <= now_min < row_start + 720:
+                x = bar_x0 + (now_min - row_start) * px_per_h // 60
+                glow = tuple(int(v * (0.6 + 0.4 * pulse)) for v in (255, 55, 110))
+                d.line([(x, y - 2), (x, y + 8)], fill=glow)
 
-            # Horizon divider
-            d.line([(4, 29), (size - 5, 29)], fill=bar_col)
-
-            # Pulsing calendar/meeting dot + countdown row (y=35)
-            d.ellipse([4, 36, 9, 41], fill=bar_col)
-            draw_bitmap_str(img, when_str[:8], 35, accent, center=False, x=13)
-
-            # Meeting title row (y=49) — gently scrolls if longer than 10 chars
-            if len(title) <= 10:
-                draw_bitmap_str(img, title, 49, (255, 255, 255), center=True)
-            else:
-                padded = title + "   "
-                shift = (f % n) % len(padded)
-                window = (padded + padded)[shift : shift + 10]
-                draw_bitmap_str(img, window, 49, (255, 255, 255), center=False, x=2)
+        text, colour = clean[page], pages[page][1]
+        if len(text) <= 10:
+            draw_bitmap_str(img, text, 53, colour, center=True)
         else:
-            bar_col = (20, int(90 + 45 * pulse), 55)
-            d.line([(4, 29), (size - 5, 29)], fill=bar_col)
-            # Clean green calendar check badge + "FREE DAY"
-            d.rounded_rectangle([4, 35, 14, 45], radius=2, outline=(35, 220, 120), width=1)
-            d.line([(6, 40), (8, 42), (12, 37)], fill=(35, 220, 120), width=1)
-            draw_bitmap_str(img, "CALENDAR", 36, (140, 235, 185), center=False, x=17)
-            draw_bitmap_str(img, "NO MTGS", 50, (35, 220, 120), center=True)
-
+            padded = text + "   "
+            shift = k % len(padded)
+            draw_bitmap_str(img, (padded + padded)[shift : shift + 10], 53, colour, center=False, x=2)
         frames.append(img)
     return _frames_to_gif(frames, duration_ms=260)
